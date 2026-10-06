@@ -9,14 +9,16 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Select, Textarea } from "@/components/ui/field";
 import { SubmitButton } from "@/components/submit-button";
 import { cn } from "@/lib/cn";
+import { requireUser } from "@/auth/session";
 
 const PURPOSE = { key_visual: "Key visual", moodboard: "Moodboard", application: "Declinazione" } as const;
 
 export default async function ImagesPage(props: PageProps<"/projects/[id]/images">) {
+  await requireUser();
   const { id } = await props.params;
   const aiReady = hasApiKey();
-  const bible = latestBible(id);
-  const images = getDb().select().from(schema.imageAssets).where(eq(schema.imageAssets.projectId, id)).orderBy(desc(schema.imageAssets.createdAt)).all();
+  const bible = await latestBible(id);
+  const images = await getDb().select().from(schema.imageAssets).where(eq(schema.imageAssets.projectId, id)).orderBy(desc(schema.imageAssets.createdAt)).all();
 
   if (!bible && !images.length) {
     return <EmptyState title="Prima la concept bible">Key visual e moodboard partono dall&apos;art direction e dalla palette della bible.</EmptyState>;

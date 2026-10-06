@@ -7,7 +7,10 @@ import { verifyQuote } from "@/domain/evidence";
 import { newId } from "@/lib/ids";
 import { eurosToCents } from "@/lib/money";
 import type { JobHandler } from "../context";
-import { throwIfCancelled } from "../context";
+import { continueLater, throwIfCancelled } from "../context";
+
+// Una lettura con il modello flash dura di solito meno di un minuto.
+const STEP_MS = 75_000;
 
 // Lettura AI dei PDF dell'archivio: sale e capienze dalle brochure delle location, singole voci di
 // prezzo dai preventivi dei fornitori (in listino come "da rivedere" finché non le approvi).
@@ -53,8 +56,8 @@ const QuoteExtract = z.object({
 
 const CAPACITY_HINT = /(platea|theatre|teatro|banchi|classroom|cabaret|banchetto|banquet|cocktail|capienza|capacity|mq|m²|sqm|ferro di cavallo|camere|rooms)/i;
 
-function documentText(documentId: string, maxChars: number, prefer?: RegExp) {
-  const pages = documentPages(documentId).filter((p) => p.text);
+async function documentText(documentId: string, maxChars: number, prefer?: RegExp) {
+  const pages = (await documentPages(documentId)).filter((p) => p.text);
   const ordered = prefer ? [...pages.filter((p) => prefer.test(p.text)), ...pages.filter((p) => !prefer.test(p.text))] : pages;
   let out = "";
   for (const p of ordered) {
@@ -67,22 +70,28 @@ function documentText(documentId: string, maxChars: number, prefer?: RegExp) {
 
 export const libraryExtract: JobHandler = async (ctx) => {
   const db = getDb();
-  const venues = db.select().from(schema.venues).where(isNotNull(schema.venues.documentId)).all();
-  const quotes = db
+  const venues = await db.select().from(schema.venues).where(isNotNull(schema.venues.documentId)).all();
+  const quotes = await db
     .select()
     .from(schema.priceBenchmarks)
     .where(and(isNotNull(schema.priceBenchmarks.documentId), eq(schema.priceBenchmarks.sourceKind, "sheet")))
     .all();
   const total = venues.length + quotes.length;
-  let done = 0;
-  let rooms = 0;
-  let lines = 0;
+  // in cloud il lavoro può continuare in più esecuzioni: ciò che è già letto non si rilegge
+  const state = (ctx.input.state as { done: string[]; rooms: number; lines: number } | undefined) ?? { done: [], rooms: 0, lines: 0 };
+  const doneIds = new Set(state.done);
+  let rooms = state.rooms;
+  let lines = state.lines;
+  const pause = () =>
+    continueLater({ ...ctx.input, state: { done: [...doneIds], rooms, lines } }, `Letti ${doneIds.size} documenti su ${total}. Continua…`);
 
   for (const v of venues) {
+    if (doneIds.has(v.id)) continue;
     throwIfCancelled(ctx.signal);
-    ctx.progress((done / total) * 100, `Sale e capienze: ${v.name}`);
-    done++;
-    const { text } = documentText(v.documentId!, 60_000, CAPACITY_HINT);
+    if (ctx.timeLeft() < STEP_MS) return pause();
+    ctx.progress((doneIds.size / total) * 100, `Sale e capienze: ${v.name}`);
+    doneIds.add(v.id);
+    const { text } = await documentText(v.documentId!, 60_000, CAPACITY_HINT);
     if (text.length < 200) continue;
     const r = await generateObject(
       { task: "library.extract.venue", runId: ctx.runId, signal: ctx.signal },
@@ -95,16 +104,18 @@ export const libraryExtract: JobHandler = async (ctx) => {
         prompt: text,
       },
     );
-    db.transaction((tx) => {
-      tx.delete(schema.venueRooms).where(eq(schema.venueRooms.venueId, v.id)).run();
+    await db.transaction(async (tx) => {
+      await tx.delete(schema.venueRooms).where(eq(schema.venueRooms.venueId, v.id)).run();
       for (const sp of r.spaces.filter((x) => x.capacity > 0 && x.capacity < 20_000)) {
-        tx.insert(schema.venueRooms)
+        await tx
+          .insert(schema.venueRooms)
           .values({ id: newId("vrm"), venueId: v.id, name: sp.name, setup: sp.setup, capacity: sp.capacity, areaSqm: sp.areaSqm, heightM: sp.heightM, documentId: v.documentId, page: sp.page })
           .run();
         rooms++;
       }
       const maxRoom = Math.max(0, ...r.spaces.map((x) => x.capacity));
-      tx.update(schema.venues)
+      await tx
+        .update(schema.venues)
         .set({
           capacityMax: v.capacityMax ?? (r.maxCapacity || maxRoom || null),
           rooms: v.rooms ?? r.hotelRooms,
@@ -115,13 +126,14 @@ export const libraryExtract: JobHandler = async (ctx) => {
         .run();
       // nome e città dal documento: se il foglio dice altro, lo si annota sul fornitore da controllare
       if (v.supplierId && (r.properName || r.city)) {
-        const sup = tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, v.supplierId)).get();
+        const sup = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, v.supplierId)).get();
         const hints = [
           r.properName && r.properName.toLowerCase() !== sup?.name.toLowerCase() ? `nome nel PDF: ${r.properName}` : null,
           r.city && v.city && r.city.toLowerCase() !== v.city.toLowerCase() ? `città nel PDF: ${r.city} (nel foglio: ${v.city})` : null,
         ].filter(Boolean);
         if (sup && hints.length && !(sup.notes ?? "").includes(hints[0]!)) {
-          tx.update(schema.suppliers)
+          await tx
+            .update(schema.suppliers)
             .set({ notes: [sup.notes, `Da controllare — ${hints.join("; ")}`].filter(Boolean).join("\n"), city: sup.city ?? r.city, region: sup.region ?? r.region })
             .where(eq(schema.suppliers.id, sup.id))
             .run();
@@ -131,10 +143,12 @@ export const libraryExtract: JobHandler = async (ctx) => {
   }
 
   for (const b of quotes) {
+    if (doneIds.has(b.id)) continue;
     throwIfCancelled(ctx.signal);
-    ctx.progress((done / total) * 100, `Voci di prezzo: ${b.supplierName ?? b.category}`);
-    done++;
-    const { text, pages } = documentText(b.documentId!, 40_000);
+    if (ctx.timeLeft() < STEP_MS) return pause();
+    ctx.progress((doneIds.size / total) * 100, `Voci di prezzo: ${b.supplierName ?? b.category}`);
+    doneIds.add(b.id);
+    const { text, pages } = await documentText(b.documentId!, 40_000);
     if (text.length < 100) continue;
     const r = await generateObject(
       { task: "library.extract.quote", runId: ctx.runId, signal: ctx.signal },
@@ -147,12 +161,13 @@ export const libraryExtract: JobHandler = async (ctx) => {
         prompt: text,
       },
     );
-    db.delete(schema.priceBenchmarks).where(like(schema.priceBenchmarks.sourceKey, `pdf:${b.documentId}:%`)).run();
-    r.lines.forEach((l, i) => {
-      if (l.totalEuro == null && l.unitCostEuro == null) return;
+    await db.delete(schema.priceBenchmarks).where(like(schema.priceBenchmarks.sourceKey, `pdf:${b.documentId}:%`)).run();
+    for (const [i, l] of r.lines.entries()) {
+      if (l.totalEuro == null && l.unitCostEuro == null) continue;
       // la riga deve esistere davvero nel PDF, altrimenti non entra nemmeno in revisione
-      if (!verifyQuote(l.quote, pages, l.page).verified) return;
-      db.insert(schema.priceBenchmarks)
+      if (!verifyQuote(l.quote, pages, l.page).verified) continue;
+      await db
+        .insert(schema.priceBenchmarks)
         .values({
           id: newId("bmk"),
           category: b.category,
@@ -177,7 +192,7 @@ export const libraryExtract: JobHandler = async (ctx) => {
         })
         .run();
       lines++;
-    });
+    }
   }
   return { venues: venues.length, rooms, quotes: quotes.length, lines };
 };

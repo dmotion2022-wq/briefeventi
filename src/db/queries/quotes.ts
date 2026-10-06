@@ -9,13 +9,15 @@ export type QuoteRow = typeof schema.quotes.$inferSelect;
 export type QuoteLineRow = typeof schema.quoteLines.$inferSelect;
 export type QuoteSectionRow = typeof schema.quoteSections.$inferSelect;
 
-export const listVatRegimes = (): VatRegime[] =>
-  getDb()
-    .select()
-    .from(schema.vatRegimes)
-    .orderBy(asc(schema.vatRegimes.position))
-    .all()
-    .map((r) => ({ code: r.code, label: r.label, kind: r.kind, rateBp: r.rateBp, invoiceNote: r.invoiceNote, allowMarkup: r.allowMarkup }));
+export const listVatRegimes = async (): Promise<VatRegime[]> =>
+  (await getDb().select().from(schema.vatRegimes).orderBy(asc(schema.vatRegimes.position)).all()).map((r) => ({
+    code: r.code,
+    label: r.label,
+    kind: r.kind,
+    rateBp: r.rateBp,
+    invoiceNote: r.invoiceNote,
+    allowMarkup: r.allowMarkup,
+  }));
 
 export function quotesForProject(projectId: string) {
   return getDb()
@@ -27,27 +29,21 @@ export function quotesForProject(projectId: string) {
 }
 
 /** Il preventivo "corrente" del progetto: l'ultima revisione non sostituita. */
-export function currentQuote(projectId: string) {
-  return quotesForProject(projectId).find((q) => q.status !== "superseded") ?? quotesForProject(projectId)[0];
+export async function currentQuote(projectId: string) {
+  const quotes = await quotesForProject(projectId);
+  return quotes.find((q) => q.status !== "superseded") ?? quotes[0];
 }
 
-export function getQuoteFull(quoteId: string) {
+export async function getQuoteFull(quoteId: string) {
   const db = getDb();
-  const quote = db.select().from(schema.quotes).where(eq(schema.quotes.id, quoteId)).get();
+  const quote = await db.select().from(schema.quotes).where(eq(schema.quotes.id, quoteId)).get();
   if (!quote) return null;
-  const sections = db
-    .select()
-    .from(schema.quoteSections)
-    .where(eq(schema.quoteSections.quoteId, quoteId))
-    .orderBy(asc(schema.quoteSections.position))
-    .all();
-  const lines = db
-    .select()
-    .from(schema.quoteLines)
-    .where(eq(schema.quoteLines.quoteId, quoteId))
-    .orderBy(asc(schema.quoteLines.position))
-    .all();
-  return { quote, sections, lines, regimes: listVatRegimes() };
+  const [sections, lines, regimes] = await Promise.all([
+    db.select().from(schema.quoteSections).where(eq(schema.quoteSections.quoteId, quoteId)).orderBy(asc(schema.quoteSections.position)).all(),
+    db.select().from(schema.quoteLines).where(eq(schema.quoteLines.quoteId, quoteId)).orderBy(asc(schema.quoteLines.position)).all(),
+    listVatRegimes(),
+  ]);
+  return { quote, sections, lines, regimes };
 }
 
 export const toEngineLine = (l: QuoteLineRow): QuoteLineInput => ({
@@ -92,8 +88,8 @@ export function quoteSettings(q: QuoteRow) {
   };
 }
 
-export function computeForQuote(quoteId: string) {
-  const full = getQuoteFull(quoteId);
+export async function computeForQuote(quoteId: string) {
+  const full = await getQuoteFull(quoteId);
   if (!full) return null;
   return {
     ...full,
@@ -106,14 +102,15 @@ export function computeForQuote(quoteId: string) {
   };
 }
 
-export function createQuote(projectId: string, title: string, sectionTitles: string[] = []) {
+export async function createQuote(projectId: string, title: string, sectionTitles: string[] = []) {
   const db = getDb();
-  const defaults = getSetting("quote.defaults");
+  const defaults = await getSetting("quote.defaults");
   const year = new Date().getFullYear();
-  const n = nextCounter(`quote-${year}`);
+  const n = await nextCounter(`quote-${year}`);
   const id = newId("quo");
-  db.transaction((tx) => {
-    tx.insert(schema.quotes)
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(schema.quotes)
       .values({
         id,
         projectId,
@@ -129,60 +126,69 @@ export function createQuote(projectId: string, title: string, sectionTitles: str
         notes: defaults.notes,
       })
       .run();
-    sectionTitles.forEach((t, i) =>
-      tx.insert(schema.quoteSections).values({ id: newId("qsc"), quoteId: id, position: i + 1, title: t }).run(),
-    );
+    if (sectionTitles.length) {
+      await tx
+        .insert(schema.quoteSections)
+        .values(sectionTitles.map((t, i) => ({ id: newId("qsc"), quoteId: id, position: i + 1, title: t })))
+        .run();
+    }
   });
   return id;
 }
 
 /** Nuova revisione: copia profonda, la precedente diventa "sostituita". */
-export function newRevision(quoteId: string) {
+export async function newRevision(quoteId: string) {
   const db = getDb();
-  const full = getQuoteFull(quoteId);
+  const full = await getQuoteFull(quoteId);
   if (!full) throw new Error("Preventivo non trovato");
   const id = newId("quo");
-  const latestRev = db
+  const latest = await db
     .select({ r: schema.quotes.revision })
     .from(schema.quotes)
     .where(eq(schema.quotes.number, full.quote.number))
     .orderBy(desc(schema.quotes.revision))
-    .get()!.r;
-  db.transaction((tx) => {
+    .get();
+  const latestRev = latest?.r ?? full.quote.revision;
+  await db.transaction(async (tx) => {
     const { id: _id, createdAt: _c, sentAt: _s, snapshot: _snap, ...rest } = full.quote;
-    tx.insert(schema.quotes).values({ ...rest, id, revision: latestRev + 1, status: "draft", date: new Date().toISOString().slice(0, 10) }).run();
-    const sectionMap = new Map<string, string>();
-    for (const s of full.sections) {
-      const sid = newId("qsc");
-      sectionMap.set(s.id, sid);
-      tx.insert(schema.quoteSections).values({ ...s, id: sid, quoteId: id }).run();
-    }
-    const lineMap = new Map(full.lines.map((l) => [l.id, newId("qln")]));
-    for (const l of full.lines) {
-      tx.insert(schema.quoteLines)
-        .values({
-          ...l,
-          id: lineMap.get(l.id)!,
-          quoteId: id,
-          sectionId: sectionMap.get(l.sectionId)!,
-          percentOfLineIds: l.percentOfLineIds?.map((x) => lineMap.get(x) ?? x) ?? null,
-        })
+    await tx.insert(schema.quotes).values({ ...rest, id, revision: latestRev + 1, status: "draft", date: new Date().toISOString().slice(0, 10) }).run();
+    const sectionMap = new Map(full.sections.map((s) => [s.id, newId("qsc")]));
+    if (full.sections.length) {
+      await tx
+        .insert(schema.quoteSections)
+        .values(full.sections.map((s) => ({ ...s, id: sectionMap.get(s.id)!, quoteId: id })))
         .run();
     }
-    tx.update(schema.quotes).set({ status: "superseded" }).where(eq(schema.quotes.id, quoteId)).run();
+    const lineMap = new Map(full.lines.map((l) => [l.id, newId("qln")]));
+    if (full.lines.length) {
+      await tx
+        .insert(schema.quoteLines)
+        .values(
+          full.lines.map((l) => ({
+            ...l,
+            id: lineMap.get(l.id)!,
+            quoteId: id,
+            sectionId: sectionMap.get(l.sectionId)!,
+            percentOfLineIds: l.percentOfLineIds?.map((x) => lineMap.get(x) ?? x) ?? null,
+          })),
+        )
+        .run();
+    }
+    await tx.update(schema.quotes).set({ status: "superseded" }).where(eq(schema.quotes.id, quoteId)).run();
   });
   return id;
 }
 
-export function deleteLines(ids: string[]) {
+export async function deleteLines(ids: string[]) {
   if (!ids.length) return;
-  getDb().delete(schema.quoteLines).where(inArray(schema.quoteLines.id, ids)).run();
+  await getDb().delete(schema.quoteLines).where(inArray(schema.quoteLines.id, ids)).run();
 }
 
-export function lineCountBySection(quoteId: string, sectionId: string) {
-  return getDb()
+export async function lineCountBySection(quoteId: string, sectionId: string) {
+  const rows = await getDb()
     .select({ id: schema.quoteLines.id })
     .from(schema.quoteLines)
     .where(and(eq(schema.quoteLines.quoteId, quoteId), eq(schema.quoteLines.sectionId, sectionId)))
-    .all().length;
+    .all();
+  return rows.length;
 }

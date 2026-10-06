@@ -1,10 +1,9 @@
 import { count } from "drizzle-orm";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { newId } from "@/lib/ids";
+import type { Db } from "./client";
+import { PLATFORM_SEED, PLATFORMS_VERIFIED_AT } from "./platforms-seed";
 import * as schema from "./schema";
 import { DEFAULT_SETTINGS } from "@/lib/settings-defaults";
-
-type SeedDb = BetterSQLite3Database<typeof schema>;
 
 // Regimi IVA: valori di partenza, modificabili da Impostazioni.
 // Da validare con il commercialista prima dell'uso su un preventivo reale.
@@ -464,24 +463,36 @@ const FORMATS: FormatSeed[] = [
   },
 ];
 
-export function seedDefaults(db: SeedDb) {
-  db.transaction((tx) => {
-    tx.insert(schema.vatRegimes).values(VAT_REGIMES).onConflictDoNothing().run();
+export async function seedDefaults(db: Db) {
+  await db.transaction(async (tx) => {
+    await tx.insert(schema.vatRegimes).values(VAT_REGIMES).onConflictDoNothing().run();
 
-    tx.insert(schema.checklistItems)
+    await tx
+      .insert(schema.checklistItems)
       .values(CHECKLIST.map((item, i) => ({ ...item, position: i + 1 })))
       .onConflictDoNothing()
       .run();
 
-    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
-      tx.insert(schema.settings).values({ key, value }).onConflictDoNothing().run();
-    }
+    await tx
+      .insert(schema.settings)
+      .values(Object.entries(DEFAULT_SETTINGS).map(([key, value]) => ({ key, value })))
+      .onConflictDoNothing()
+      .run();
 
-    const [{ n }] = tx.select({ n: count() }).from(schema.formatIdeas).all();
+    const [{ n }] = await tx.select({ n: count() }).from(schema.formatIdeas).all();
     if (n === 0) {
-      tx.insert(schema.formatIdeas)
+      await tx
+        .insert(schema.formatIdeas)
         .values(FORMATS.map((f) => ({ ...f, id: newId("fmt") })))
         .run();
     }
+
+    // Piattaforme della ricerca: entrano quelle nuove, le schede già presenti (e modificate) restano come sono.
+    // Per questo dall'app le piattaforme fornite si "scartano" e non si eliminano.
+    await tx
+      .insert(schema.platforms)
+      .values(PLATFORM_SEED.map((p) => ({ ...p, id: newId("plt"), source: "research" as const, verifiedAt: PLATFORMS_VERIFIED_AT })))
+      .onConflictDoNothing({ target: schema.platforms.seedKey })
+      .run();
   });
 }

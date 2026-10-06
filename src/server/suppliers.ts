@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { requireUser } from "@/auth/session";
 import { getDb, schema } from "@/db/client";
 import { extractEmails, formatPhoneDisplay, normalizePhone, phoneType } from "@/domain/contacts/phone";
 import { newId } from "@/lib/ids";
@@ -23,6 +24,7 @@ const nullIfEmpty = (v: FormDataEntryValue | null) => {
 };
 
 export async function updateSupplier(id: string, form: FormData) {
+  await requireUser();
   const data = SupplierPatch.parse({
     name: form.get("name"),
     kind: form.get("kind"),
@@ -34,15 +36,16 @@ export async function updateSupplier(id: string, form: FormData) {
   });
   const website = data.website && !/^https?:\/\//i.test(data.website) ? `https://${data.website}` : data.website;
   const domain = website ? new URL(website).hostname.replace(/^www\./, "") : null;
-  getDb().update(schema.suppliers).set({ ...data, website, domain }).where(eq(schema.suppliers.id, id)).run();
+  await getDb().update(schema.suppliers).set({ ...data, website, domain }).where(eq(schema.suppliers.id, id)).run();
   revalidatePath(`/library/suppliers/${id}`);
 }
 
 export async function createSupplier(form: FormData) {
+  await requireUser();
   const name = String(form.get("name") ?? "").trim();
   if (name.length < 2) throw new Error("Nome troppo corto");
   const id = newId("sup");
-  getDb()
+  await getDb()
     .insert(schema.suppliers)
     .values({
       id,
@@ -58,6 +61,7 @@ export async function createSupplier(form: FormData) {
 
 /** Contatto inserito a mano: il numero viene normalizzato, lo stato dice come è stato verificato. */
 export async function addContact(supplierId: string, form: FormData) {
+  await requireUser();
   const raw = String(form.get("value") ?? "").trim();
   const person = nullIfEmpty(form.get("person"));
   const role = nullIfEmpty(form.get("role"));
@@ -66,7 +70,8 @@ export async function addContact(supplierId: string, form: FormData) {
   const now = new Date().toISOString();
   const email = extractEmails(raw)[0]?.value;
   if (email) {
-    db.insert(schema.supplierContacts)
+    await db
+      .insert(schema.supplierContacts)
       .values({
         id: newId("cnt"),
         supplierId,
@@ -84,7 +89,8 @@ export async function addContact(supplierId: string, form: FormData) {
   } else {
     const e164 = normalizePhone(raw);
     if (!e164) throw new Error("Numero di telefono non valido");
-    db.insert(schema.supplierContacts)
+    await db
+      .insert(schema.supplierContacts)
       .values({
         id: newId("cnt"),
         supplierId,
@@ -104,10 +110,12 @@ export async function addContact(supplierId: string, form: FormData) {
 }
 
 export async function setContactStatus(contactId: string, status: "verified" | "invalid") {
+  await requireUser();
   const db = getDb();
-  const contact = db.select().from(schema.supplierContacts).where(eq(schema.supplierContacts.id, contactId)).get();
+  const contact = await db.select().from(schema.supplierContacts).where(eq(schema.supplierContacts.id, contactId)).get();
   if (!contact) return;
-  db.update(schema.supplierContacts)
+  await db
+    .update(schema.supplierContacts)
     .set(
       status === "verified"
         ? { status, verificationMethod: "manual_call", verifiedAt: new Date().toISOString() }
@@ -119,9 +127,10 @@ export async function setContactStatus(contactId: string, status: "verified" | "
 }
 
 export async function deleteContact(contactId: string) {
+  await requireUser();
   const db = getDb();
-  const contact = db.select().from(schema.supplierContacts).where(eq(schema.supplierContacts.id, contactId)).get();
+  const contact = await db.select().from(schema.supplierContacts).where(eq(schema.supplierContacts.id, contactId)).get();
   if (!contact) return;
-  db.delete(schema.supplierContacts).where(eq(schema.supplierContacts.id, contactId)).run();
+  await db.delete(schema.supplierContacts).where(eq(schema.supplierContacts.id, contactId)).run();
   revalidatePath(`/library/suppliers/${contact.supplierId}`);
 }

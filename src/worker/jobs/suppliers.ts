@@ -5,7 +5,9 @@ import { maskFor } from "@/ai/context";
 import { getDb, schema } from "@/db/client";
 import { crawlContacts } from "@/domain/contacts/web";
 import { formatPhoneDisplay, phoneType } from "@/domain/contacts/phone";
+import { platformsForCategories } from "@/db/queries/platforms";
 import { newId } from "@/lib/ids";
+import { platformCategoryFor } from "@/lib/labels";
 import { getSetting } from "@/lib/settings";
 import type { JobHandler } from "../context";
 import { throwIfCancelled } from "../context";
@@ -24,23 +26,31 @@ const Candidates = z.object({
 
 const PORTALS = /(paginegialle|tripadvisor|facebook|instagram|linkedin|google|booking\.com|venuereport|eventi-aziendali|matrimonio|wedding|yelp|virgilio|youtube|wikipedia)/i;
 
-function lineContext(quoteLineId: string) {
+async function lineContext(quoteLineId: string) {
   const db = getDb();
-  const line = db.select().from(schema.quoteLines).where(eq(schema.quoteLines.id, quoteLineId)).get();
+  const line = await db.select().from(schema.quoteLines).where(eq(schema.quoteLines.id, quoteLineId)).get();
   if (!line) throw new Error("Voce di preventivo non trovata");
-  const quote = db.select().from(schema.quotes).where(eq(schema.quotes.id, line.quoteId)).get()!;
-  const project = db.select().from(schema.projects).where(eq(schema.projects.id, quote.projectId)).get()!;
-  const component = line.componentId ? db.select().from(schema.components).where(eq(schema.components.id, line.componentId)).get() : undefined;
+  const quote = await db.select().from(schema.quotes).where(eq(schema.quotes.id, line.quoteId)).get();
+  if (!quote) throw new Error("Preventivo non trovato");
+  const project = await db.select().from(schema.projects).where(eq(schema.projects.id, quote.projectId)).get();
+  if (!project) throw new Error("Progetto non trovato");
+  const component = line.componentId ? await db.select().from(schema.components).where(eq(schema.components.id, line.componentId)).get() : undefined;
   return { line, quote, project, component };
 }
 
 /** Ricerca di nuovi fornitori per una voce: Qwen con fonti, poi verifica dei telefoni sul sito ufficiale. */
 export const supplierSearch: JobHandler = async (ctx) => {
   const db = getDb();
-  const { line, project, component } = lineContext(String(ctx.input.quoteLineId));
+  const { line, project, component } = await lineContext(String(ctx.input.quoteLineId));
   const where = [project.city, project.region].filter(Boolean).join(", ") || "Italia";
   const kind = ((component?.specs as { supplierKind?: string } | null)?.supplierKind ?? "other") as (typeof schema.SUPPLIER_KINDS)[number];
   const call = { runId: ctx.runId, projectId: project.id, signal: ctx.signal, mask: maskFor(project) };
+  // le piattaforme che il team usa per questa categoria indirizzano la ricerca (ma il sito resta quello del fornitore)
+  const platforms = (await platformsForCategories([platformCategoryFor(component?.category)])).filter((p) => p.status === "in_uso").slice(0, 6);
+  const platformDomains = new Set(platforms.map((p) => p.domain).filter(Boolean));
+  const platformHint = platforms.length
+    ? ` Cerca anche negli elenchi e nei portali che usiamo (${platforms.map((p) => p.domain ?? p.name).join(", ")}), ma per ogni fornitore indica il suo sito ufficiale, non la pagina del portale.`
+    : "";
 
   ctx.progress(10, "Ricerca sul web");
   const search = await searchWeb(
@@ -48,7 +58,7 @@ export const supplierSearch: JobHandler = async (ctx) => {
     {
       system:
         "Sei il responsabile acquisti di un'agenzia di eventi italiana. Cerchi fornitori reali e attivi, con il loro sito ufficiale. Rispondi in italiano citando le fonti con [n].",
-      query: `Trova 5 fornitori per: ${line.description}${line.detail ? ` (${line.detail})` : ""}. Evento aziendale a ${where}${project.paxTarget ? ` per circa ${project.paxTarget} persone` : ""}. Per ciascuno indica nome, sito ufficiale, città e perché è adatto.`,
+      query: `Trova 5 fornitori per: ${line.description}${line.detail ? ` (${line.detail})` : ""}. Evento aziendale a ${where}${project.paxTarget ? ` per circa ${project.paxTarget} persone` : ""}. Per ciascuno indica nome, sito ufficiale, città e perché è adatto.${platformHint}`,
     },
   );
   throwIfCancelled(ctx.signal);
@@ -69,16 +79,12 @@ export const supplierSearch: JobHandler = async (ctx) => {
   );
 
   const known = new Set(
-    db
-      .select({ d: schema.suppliers.domain })
-      .from(schema.suppliers)
-      .all()
-      .map((s) => s.d)
-      .filter(Boolean),
+    (await db.select({ d: schema.suppliers.domain }).from(schema.suppliers).all()).map((s) => s.d).filter(Boolean),
   );
   let added = 0;
   let verifiedPhones = 0;
-  const candidates = structured.candidates.filter((c) => c.website && !PORTALS.test(c.website)).slice(0, 5);
+  const isPlatform = (site: string) => [...platformDomains].some((d) => d && site.toLowerCase().includes(d));
+  const candidates = structured.candidates.filter((c) => c.website && !PORTALS.test(c.website) && !isPlatform(c.website)).slice(0, 5);
   for (const [i, c] of candidates.entries()) {
     throwIfCancelled(ctx.signal);
     ctx.progress(50 + (i / Math.max(1, candidates.length)) * 45, `Verifica dei contatti sul sito di ${c.name}`);
@@ -89,7 +95,7 @@ export const supplierSearch: JobHandler = async (ctx) => {
       continue;
     }
     // fornitore già in rubrica: si collega senza duplicarlo
-    const existing = known.has(domain) ? db.select().from(schema.suppliers).where(eq(schema.suppliers.domain, domain)).get() : undefined;
+    const existing = known.has(domain) ? await db.select().from(schema.suppliers).where(eq(schema.suppliers.domain, domain)).get() : undefined;
     const supplierId = existing?.id ?? newId("sup");
     const crawl = await crawlContacts(domain, ctx.signal);
     const phones = new Map<string, { snippet: string; url: string; evidencePath: string }>();
@@ -99,9 +105,10 @@ export const supplierSearch: JobHandler = async (ctx) => {
       for (const e of p.emails) if (!emails.has(e)) emails.set(e, { url: p.url, evidencePath: p.evidencePath });
     }
     const sourceUrls = c.sources.map((n) => search.sources.find((s) => s.index === n)?.url).filter(Boolean);
-    db.transaction((tx) => {
+    await db.transaction(async (tx) => {
       if (!existing) {
-        tx.insert(schema.suppliers)
+        await tx
+          .insert(schema.suppliers)
           .values({
             id: supplierId,
             name: c.name,
@@ -120,7 +127,7 @@ export const supplierSearch: JobHandler = async (ctx) => {
       }
       const now = new Date().toISOString();
       for (const [e164, ev] of [...phones.entries()].slice(0, 4)) {
-        const r = tx
+        const r = await tx
           .insert(schema.supplierContacts)
           .values({
             id: newId("cnt"),
@@ -135,10 +142,11 @@ export const supplierSearch: JobHandler = async (ctx) => {
           })
           .onConflictDoNothing()
           .run();
-        verifiedPhones += r.changes;
+        verifiedPhones += r.rowsAffected;
       }
       for (const [email, ev] of [...emails.entries()].slice(0, 3)) {
-        tx.insert(schema.supplierContacts)
+        await tx
+          .insert(schema.supplierContacts)
           .values({
             id: newId("cnt"),
             supplierId,
@@ -153,14 +161,12 @@ export const supplierSearch: JobHandler = async (ctx) => {
           .onConflictDoNothing()
           .run();
       }
-      const linked = tx
-        .select()
-        .from(schema.supplierLinks)
-        .where(eq(schema.supplierLinks.quoteLineId, line.id))
-        .all()
-        .some((l) => l.supplierId === supplierId);
+      const linked = (await tx.select().from(schema.supplierLinks).where(eq(schema.supplierLinks.quoteLineId, line.id)).all()).some(
+        (l) => l.supplierId === supplierId,
+      );
       if (!linked) {
-        tx.insert(schema.supplierLinks)
+        await tx
+          .insert(schema.supplierLinks)
           .values({
             id: newId("lnk"),
             projectId: project.id,
@@ -183,13 +189,14 @@ const RfqSchema = z.object({ subject: z.string(), body: z.string() });
 /** Bozza di richiesta di disponibilità e preventivo per un fornitore. Nessun invio automatico. */
 export const rfqDraft: JobHandler = async (ctx) => {
   const db = getDb();
-  const link = db.select().from(schema.supplierLinks).where(eq(schema.supplierLinks.id, String(ctx.input.linkId))).get();
+  const link = await db.select().from(schema.supplierLinks).where(eq(schema.supplierLinks.id, String(ctx.input.linkId))).get();
   if (!link?.quoteLineId) throw new Error("Collegamento non trovato");
-  const { line, project, component } = lineContext(link.quoteLineId);
-  const supplier = db.select().from(schema.suppliers).where(eq(schema.suppliers.id, link.supplierId)).get()!;
-  const agency = getSetting("agency");
+  const { line, project, component } = await lineContext(link.quoteLineId);
+  const supplier = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, link.supplierId)).get();
+  if (!supplier) throw new Error("Fornitore non trovato");
+  const agency = await getSetting("agency");
   const slots = component?.slotIds?.length
-    ? db.select().from(schema.agendaSlots).where(eq(schema.agendaSlots.projectId, project.id)).all().filter((s) => component.slotIds!.includes(s.id))
+    ? (await db.select().from(schema.agendaSlots).where(eq(schema.agendaSlots.projectId, project.id)).all()).filter((s) => component.slotIds!.includes(s.id))
     : [];
 
   ctx.progress(20, "Scrittura della richiesta");
@@ -221,6 +228,6 @@ Firma con i dati dell'agenzia forniti. Niente segnaposto tra parentesi quadre.`,
     },
   );
   const id = newId("rfq");
-  db.insert(schema.rfqDrafts).values({ id, linkId: link.id, subject: draft.subject, body: draft.body }).run();
+  await db.insert(schema.rfqDrafts).values({ id, linkId: link.id, subject: draft.subject, body: draft.body }).run();
   return { rfqId: id };
 };

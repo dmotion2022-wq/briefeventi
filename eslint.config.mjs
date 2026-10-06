@@ -12,6 +12,15 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_", ignoreRestSiblings: true }],
     },
   },
+  {
+    // Database e storage sono asincroni: una promessa non attesa è una scrittura che può perdersi.
+    files: ["src/**/*.{ts,tsx}", "scripts/**/*.ts"],
+    languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } },
+    rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": ["error", { checksVoidReturn: { attributes: false } }],
+    },
+  },
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",

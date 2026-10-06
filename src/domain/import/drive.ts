@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { getDb, schema } from "@/db/client";
+import { getDb, schema, type Tx } from "@/db/client";
 import { newId } from "@/lib/ids";
 import type { DriveSource } from "@/lib/settings-defaults";
 import { parseCsv, toRecords } from "./normalize";
@@ -59,12 +59,14 @@ function diffRaw(existing: Map<string, Record<string, string> | null>, incoming:
 }
 
 /** Prova a vuoto: cosa verrebbe aggiunto o aggiornato, senza scrivere nulla. */
-export function diffPlan(plan: ImportPlan): ImportDiff {
+export async function diffPlan(plan: ImportPlan): Promise<ImportDiff> {
   const db = getDb();
-  const works = new Map(db.select({ k: schema.referenceWorks.sourceKey, raw: schema.referenceWorks.raw }).from(schema.referenceWorks).all().map((r) => [r.k, r.raw]));
-  const venues = new Map(db.select({ k: schema.venues.sourceKey, raw: schema.venues.raw }).from(schema.venues).all().map((r) => [r.k, r.raw]));
+  const works = new Map(
+    (await db.select({ k: schema.referenceWorks.sourceKey, raw: schema.referenceWorks.raw }).from(schema.referenceWorks).all()).map((r) => [r.k, r.raw]),
+  );
+  const venues = new Map((await db.select({ k: schema.venues.sourceKey, raw: schema.venues.raw }).from(schema.venues).all()).map((r) => [r.k, r.raw]));
   const benchmarks = new Map(
-    db.select({ k: schema.priceBenchmarks.sourceKey, raw: schema.priceBenchmarks.raw }).from(schema.priceBenchmarks).all().map((r) => [r.k ?? "", r.raw]),
+    (await db.select({ k: schema.priceBenchmarks.sourceKey, raw: schema.priceBenchmarks.raw }).from(schema.priceBenchmarks).all()).map((r) => [r.k ?? "", r.raw]),
   );
   return {
     works: diffRaw(works, plan.works, (r) => (r as WorkRecord).name),
@@ -81,8 +83,8 @@ const supplierKey = (name: string) =>
     .trim();
 
 /** Trova o crea il fornitore (deduplica per nome normalizzato). */
-function upsertSupplier(
-  tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0],
+async function upsertSupplier(
+  tx: Tx,
   index: Map<string, string>,
   data: { name: string; kind: SupplierKind; city?: string | null; region?: string | null; country?: string | null; categories?: string[] },
 ) {
@@ -90,7 +92,8 @@ function upsertSupplier(
   const existing = index.get(key);
   if (existing) return existing;
   const id = newId("sup");
-  tx.insert(schema.suppliers)
+  await tx
+    .insert(schema.suppliers)
     .values({
       id,
       name: data.name,
@@ -106,15 +109,18 @@ function upsertSupplier(
   return id;
 }
 
-export function applyPlan(plan: ImportPlan) {
+export async function applyPlan(plan: ImportPlan) {
   const db = getDb();
-  const diff = diffPlan(plan);
-  db.transaction((tx) => {
-    const supplierIndex = new Map(tx.select({ id: schema.suppliers.id, name: schema.suppliers.name }).from(schema.suppliers).all().map((s) => [supplierKey(s.name), s.id]));
+  const diff = await diffPlan(plan);
+  await db.transaction(async (tx) => {
+    const supplierIndex = new Map(
+      (await tx.select({ id: schema.suppliers.id, name: schema.suppliers.name }).from(schema.suppliers).all()).map((s) => [supplierKey(s.name), s.id]),
+    );
 
     for (const w of plan.works) {
       const values = { ...w, tags: w.tags };
-      tx.insert(schema.referenceWorks)
+      await tx
+        .insert(schema.referenceWorks)
         .values({ id: newId("wrk"), ...values })
         .onConflictDoUpdate({ target: schema.referenceWorks.sourceKey, set: values })
         .run();
@@ -122,11 +128,12 @@ export function applyPlan(plan: ImportPlan) {
 
     for (const v of plan.venues) {
       const { supplierKind, ...values } = v;
-      const current = tx.select({ supplierId: schema.venues.supplierId }).from(schema.venues).where(eq(schema.venues.sourceKey, v.sourceKey)).get();
+      const current = await tx.select({ supplierId: schema.venues.supplierId }).from(schema.venues).where(eq(schema.venues.sourceKey, v.sourceKey)).get();
       const supplierId =
         current?.supplierId ??
-        upsertSupplier(tx, supplierIndex, { name: v.name, kind: supplierKind, city: v.city, region: v.region, country: v.country, categories: ["location"] });
-      tx.insert(schema.venues)
+        (await upsertSupplier(tx, supplierIndex, { name: v.name, kind: supplierKind, city: v.city, region: v.region, country: v.country, categories: ["location"] }));
+      await tx
+        .insert(schema.venues)
         .values({ id: newId("ven"), ...values, supplierId })
         .onConflictDoUpdate({ target: schema.venues.sourceKey, set: { ...values, supplierId } })
         .run();
@@ -134,7 +141,7 @@ export function applyPlan(plan: ImportPlan) {
 
     for (const b of plan.benchmarks) {
       const supplierId = b.supplierName
-        ? upsertSupplier(tx, supplierIndex, { name: b.supplierName, kind: b.supplierKind, city: b.city, categories: [b.category] })
+        ? await upsertSupplier(tx, supplierIndex, { name: b.supplierName, kind: b.supplierKind, city: b.city, categories: [b.category] })
         : null;
       const values = {
         category: b.category,
@@ -159,7 +166,8 @@ export function applyPlan(plan: ImportPlan) {
         driveFileId: b.driveFileId,
         raw: b.raw,
       };
-      tx.insert(schema.priceBenchmarks)
+      await tx
+        .insert(schema.priceBenchmarks)
         .values({ id: newId("bmk"), ...values })
         .onConflictDoUpdate({ target: schema.priceBenchmarks.sourceKey, set: values })
         .run();

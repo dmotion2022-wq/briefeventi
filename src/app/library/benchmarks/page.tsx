@@ -9,13 +9,15 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Table, Td, Th, THead, Tr } from "@/components/ui/table";
 import { PRICING_MODEL_LABELS } from "@/lib/labels";
 import { formatCents } from "@/lib/money";
+import { requireUser } from "@/auth/session";
 
 export const metadata = { title: "Listino" };
 
 const VAT = { yes: "IVA inclusa", no: "IVA esclusa", unknown: "IVA da verificare" } as const;
 
-export default function BenchmarksPage() {
-  const all = listBenchmarks();
+export default async function BenchmarksPage() {
+  await requireUser();
+  const all = await listBenchmarks();
   const rows = all.filter((b) => b.reviewStatus === "approved");
   const pending = all.filter((b) => b.reviewStatus === "pending");
   return (

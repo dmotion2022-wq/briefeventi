@@ -9,25 +9,27 @@ export type Project = typeof schema.projects.$inferSelect;
 
 export const MAX_DOCUMENT_CHARS = 400_000;
 
-export function projectDocuments(projectId: string) {
+export async function projectDocuments(projectId: string) {
   const db = getDb();
-  const docs = db.select().from(schema.documents).where(eq(schema.documents.projectId, projectId)).orderBy(asc(schema.documents.createdAt)).all();
-  return docs.map((d) => ({
-    document: d,
-    pages: db
-      .select()
-      .from(schema.documentPages)
-      .where(eq(schema.documentPages.documentId, d.id))
-      .orderBy(asc(schema.documentPages.pageNumber))
-      .all(),
-  }));
+  const docs = await db.select().from(schema.documents).where(eq(schema.documents.projectId, projectId)).orderBy(asc(schema.documents.createdAt)).all();
+  return Promise.all(
+    docs.map(async (d) => ({
+      document: d,
+      pages: await db
+        .select()
+        .from(schema.documentPages)
+        .where(eq(schema.documentPages.documentId, d.id))
+        .orderBy(asc(schema.documentPages.pageNumber))
+        .all(),
+    })),
+  );
 }
 
 /** Testo dei documenti del progetto con i marcatori [PAGINA n] usati per le citazioni. */
-export function documentsText(projectId: string) {
+export async function documentsText(projectId: string) {
   let out = "";
   let truncated = false;
-  for (const { document, pages } of projectDocuments(projectId)) {
+  for (const { document, pages } of await projectDocuments(projectId)) {
     out += `\n=== DOCUMENTO: ${document.filename} ===\n`;
     for (const p of pages) {
       if (!p.text) continue;
@@ -66,11 +68,11 @@ export function latestBrief(projectId: string, opts: { confirmedOnly?: boolean }
 }
 
 /** Brief confermato + risposte del cliente e ipotesi accettate: la base di tutte le fasi creative. */
-export function briefContext(projectId: string) {
+export async function briefContext(projectId: string) {
   const db = getDb();
-  const brief = latestBrief(projectId, { confirmedOnly: true }) ?? latestBrief(projectId);
+  const brief = (await latestBrief(projectId, { confirmedOnly: true })) ?? (await latestBrief(projectId));
   if (!brief) return null;
-  const gaps = db.select().from(schema.gapItems).where(eq(schema.gapItems.briefId, brief.id)).all();
+  const gaps = await db.select().from(schema.gapItems).where(eq(schema.gapItems.briefId, brief.id)).all();
   const answers = gaps
     .filter((g) => g.answer || g.assumptionAccepted)
     .map((g) => `- ${g.checklistKey}: ${g.answer ? `risposta del cliente: ${g.answer}` : `ipotesi accettata: ${g.assumption}`}`);
@@ -94,8 +96,8 @@ export function latestBible(projectId: string) {
     .get();
 }
 
-export function bibleContext(projectId: string) {
-  const bible = latestBible(projectId);
+export async function bibleContext(projectId: string) {
+  const bible = await latestBible(projectId);
   return bible ? { bible, text: `CONCEPT BIBLE (riferimento vincolante, versione ${bible.version}):\n${JSON.stringify(bible.data, null, 1)}` } : null;
 }
 
@@ -108,8 +110,8 @@ export function agendaSlotsOf(projectId: string) {
     .all();
 }
 
-export function agendaContext(projectId: string) {
-  const slots = agendaSlotsOf(projectId);
+export async function agendaContext(projectId: string) {
+  const slots = await agendaSlotsOf(projectId);
   if (!slots.length) return null;
   const lines = slots.map(
     (s) =>
@@ -118,8 +120,8 @@ export function agendaContext(projectId: string) {
   return { slots, text: `SCALETTA (usa gli ID tra parentesi quadre):\n${lines.join("\n")}` };
 }
 
-export function venuesArchiveText() {
-  const venues = getDb().select().from(schema.venues).all();
+export async function venuesArchiveText() {
+  const venues = await getDb().select().from(schema.venues).all();
   return {
     venues,
     text: [
@@ -132,8 +134,8 @@ export function venuesArchiveText() {
   };
 }
 
-export function benchmarksText() {
-  const rows = getDb().select().from(schema.priceBenchmarks).where(eq(schema.priceBenchmarks.reviewStatus, "approved")).all();
+export async function benchmarksText() {
+  const rows = await getDb().select().from(schema.priceBenchmarks).where(eq(schema.priceBenchmarks.reviewStatus, "approved")).all();
   const eur = (c: number | null) => (c == null ? "" : `${(c / 100).toLocaleString("it-IT")} €`);
   return [
     "PREZZI REALI DAI PREVENTIVI IN ARCHIVIO (riferimento per le stime, IVA come indicato):",

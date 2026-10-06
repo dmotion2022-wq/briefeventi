@@ -3,6 +3,7 @@ import { Sparkles } from "lucide-react";
 import { hasApiKey } from "@/ai/qwen";
 import { latestBrief } from "@/ai/context";
 import type { BibleData, ConceptData } from "@/ai/schemas/creative";
+import { requireUser } from "@/auth/session";
 import { getDb, schema } from "@/db/client";
 import { buildBibleAction, generateConceptsAction } from "@/server/creative";
 import { Badge } from "@/components/ui/badge";
@@ -40,28 +41,34 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 }
 
 export default async function ConceptsPage(props: PageProps<"/projects/[id]/concepts">) {
+  await requireUser();
   const { id } = await props.params;
   const db = getDb();
   const aiReady = hasApiKey();
-  const brief = latestBrief(id);
+  const brief = await latestBrief(id);
   if (!brief) return <EmptyState title="Prima il brief">I concept nascono dal brief analizzato (meglio se confermato e con le lacune chiarite).</EmptyState>;
 
-  const concepts = db
-    .select()
-    .from(schema.concepts)
-    .where(and(eq(schema.concepts.projectId, id), ne(schema.concepts.status, "discarded")))
-    .orderBy(desc(schema.concepts.createdAt))
-    .all()
+  const concepts = (
+    await db
+      .select()
+      .from(schema.concepts)
+      .where(and(eq(schema.concepts.projectId, id), ne(schema.concepts.status, "discarded")))
+      .orderBy(desc(schema.concepts.createdAt))
+      .all()
+  )
     .slice(0, 3)
     .sort((a, b) => ["safe", "bold", "disruptive"].indexOf(a.variant) - ["safe", "bold", "disruptive"].indexOf(b.variant));
-  const bible = db.select().from(schema.conceptBibles).where(eq(schema.conceptBibles.projectId, id)).orderBy(desc(schema.conceptBibles.version)).get();
+  const bible = await db.select().from(schema.conceptBibles).where(eq(schema.conceptBibles.projectId, id)).orderBy(desc(schema.conceptBibles.version)).get();
   const formatIds = concepts.flatMap((c) => (c.data as unknown as ConceptData).formatIds ?? []);
   const workIds = concepts.flatMap((c) => (c.data as unknown as ConceptData).referenceWorkIds ?? []);
   const formats = new Map(
-    (formatIds.length ? db.select().from(schema.formatIdeas).where(inArray(schema.formatIdeas.id, formatIds)).all() : []).map((f) => [f.id, f.name]),
+    (formatIds.length ? await db.select().from(schema.formatIdeas).where(inArray(schema.formatIdeas.id, formatIds)).all() : []).map((f) => [f.id, f.name]),
   );
   const works = new Map(
-    (workIds.length ? db.select().from(schema.referenceWorks).where(inArray(schema.referenceWorks.id, workIds)).all() : []).map((w) => [w.id, w.concept ?? w.name]),
+    (workIds.length ? await db.select().from(schema.referenceWorks).where(inArray(schema.referenceWorks.id, workIds)).all() : []).map((w) => [
+      w.id,
+      w.concept ?? w.name,
+    ]),
   );
   const firstCritique = concepts[0]?.critique as Critique | undefined;
 

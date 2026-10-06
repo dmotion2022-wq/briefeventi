@@ -16,6 +16,7 @@ import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { SubmitButton } from "@/components/submit-button";
 import { cn } from "@/lib/cn";
 import { formatDate } from "@/lib/labels";
+import { requireUser } from "@/auth/session";
 
 const STATUS = {
   draft: { label: "Bozza", tone: "neutral" },
@@ -26,11 +27,12 @@ const STATUS = {
 } as const;
 
 export default async function QuotePage(props: PageProps<"/projects/[id]/quote">) {
+  await requireUser();
   const { id } = await props.params;
   const sp = await props.searchParams;
   const view = sp.view === "client" ? "client" : "internal";
-  const all = quotesForProject(id);
-  const selected = typeof sp.q === "string" ? all.find((q) => q.id === sp.q) : currentQuote(id);
+  const all = await quotesForProject(id);
+  const selected = typeof sp.q === "string" ? all.find((q) => q.id === sp.q) : await currentQuote(id);
 
   if (!selected) {
     return (
@@ -48,7 +50,8 @@ export default async function QuotePage(props: PageProps<"/projects/[id]/quote">
     );
   }
 
-  const full = getQuoteFull(selected.id)!;
+  const full = await getQuoteFull(selected.id);
+  if (!full) return <EmptyState title="Preventivo non trovato">Ricarica la pagina.</EmptyState>;
   const q = full.quote;
   const readOnly = q.status !== "draft";
   const qs = (extra: Record<string, string>) => `?${new URLSearchParams({ ...(sp.q ? { q: String(sp.q) } : {}), view, ...extra })}`;

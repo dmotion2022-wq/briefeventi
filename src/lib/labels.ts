@@ -91,3 +91,52 @@ export const FORMAT_TYPE_LABELS: Record<string, string> = {
 };
 
 export const COST_LEVEL_LABELS: Record<string, string> = { low: "€", mid: "€€", high: "€€€" };
+
+// Categorie delle piattaforme: le chiavi della checklist più "dmc" e "generale".
+export const PLATFORM_CATEGORY_LABELS: Record<string, string> = {
+  generale: "Trasversali: convention bureau, associazioni, elenchi",
+  location: "Location e sale",
+  pernottamento: "Hotel e pernottamento",
+  dmc: "DMC e servizi in destinazione",
+  catering: "Catering e F&B",
+  allestimenti: "Allestimenti, arredi e noleggi",
+  av_regia: "Audio, video, luci e regia",
+  transfer: "Viaggi e transfer",
+  staff: "Staff, interpreti, foto e video",
+  registrazione: "Iscrizioni, ticketing e app",
+  engagement: "Interazione ed engagement",
+  comunicazione: "Stampa e comunicazione",
+  gadget: "Gadget e welcome kit",
+  intrattenimento: "Intrattenimento, speaker e team building",
+  sicurezza_permessi: "Sicurezza, sanità, permessi e assicurazioni",
+  siae: "SIAE e diritti musicali",
+  sostenibilita: "Sostenibilità",
+  ecm: "Accreditamento ECM",
+};
+
+/** Categoria delle piattaforme per una voce di costo (chiave della checklist). */
+export const platformCategoryFor = (category: string | null | undefined) =>
+  !category ? "generale" : category === "sale_allestimento" ? "location" : category in PLATFORM_CATEGORY_LABELS ? category : "generale";
+
+export const PLATFORM_TYPE_LABELS: Record<string, string> = {
+  marketplace: "Marketplace",
+  directory: "Elenco",
+  associazione: "Associazione",
+  convention_bureau: "Convention bureau",
+  software: "Software",
+  portale_ufficiale: "Portale ufficiale",
+  fornitore_nazionale: "Fornitore nazionale",
+};
+
+export const PLATFORM_STATUS: Record<string, { label: string; tone: Tone }> = {
+  in_uso: { label: "In uso", tone: "ok" },
+  da_valutare: { label: "Da valutare", tone: "neutral" },
+  scartata: { label: "Scartata", tone: "warn" },
+};
+
+/** URL di ricerca della piattaforma con testo e città, se la piattaforma lo permette. */
+export function platformSearchLink(template: string | null | undefined, q: string, city?: string | null) {
+  if (!template) return null;
+  if (template.includes("{city}") && !city?.trim()) return null;
+  return template.replaceAll("{q}", encodeURIComponent(q.trim())).replaceAll("{city}", encodeURIComponent(city?.trim() ?? ""));
+}

@@ -1,4 +1,5 @@
 import { hasApiKey } from "@/ai/qwen";
+import { requireUser } from "@/auth/session";
 import { schema } from "@/db/client";
 import { createProjectAction } from "@/server/projects";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
@@ -6,10 +7,13 @@ import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { PageHeader } from "@/components/ui/page-header";
 import { SECTOR_LABELS } from "@/lib/labels";
 import { SubmitButton } from "@/components/submit-button";
+import { UploadField } from "@/components/upload-field";
+import { usesBlob } from "@/lib/storage";
 
 export const metadata = { title: "Nuovo progetto" };
 
-export default function NewProjectPage() {
+export default async function NewProjectPage() {
+  await requireUser();
   const aiReady = hasApiKey();
   return (
     <div className="mx-auto max-w-4xl">
@@ -59,11 +63,8 @@ export default function NewProjectPage() {
               <Textarea name="briefText" className="min-h-48" placeholder="Incolla qui l'email o il documento del cliente…" />
             </Field>
             <Field label="Documenti">
-              <input
-                type="file"
-                name="files"
-                multiple
-                accept=".pdf,.docx,.txt,.eml,application/pdf"
+              <UploadField
+                online={usesBlob()}
                 className="text-[13px] file:mr-3 file:rounded-sm file:border-0 file:bg-ink file:px-3 file:py-2 file:text-paper"
               />
             </Field>

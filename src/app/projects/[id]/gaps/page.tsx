@@ -2,6 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import { Mail } from "lucide-react";
 import { hasApiKey } from "@/ai/qwen";
 import { latestBrief } from "@/ai/context";
+import { requireUser } from "@/auth/session";
 import { getDb, schema } from "@/db/client";
 import { answerGapAction, runTask } from "@/server/projects";
 import { Badge, type Tone } from "@/components/ui/badge";
@@ -25,21 +26,16 @@ const CRIT: Record<string, { label: string; tone: Tone }> = {
 const ORDER = { blocking: 0, important: 1, optional: 2 } as const;
 
 export default async function GapsPage(props: PageProps<"/projects/[id]/gaps">) {
+  await requireUser();
   const { id } = await props.params;
-  const brief = latestBrief(id);
+  const brief = await latestBrief(id);
   const aiReady = hasApiKey();
   if (!brief) {
     return <EmptyState title="Prima analizza il brief">Le lacune si calcolano sul brief strutturato.</EmptyState>;
   }
   const db = getDb();
-  const checklist = new Map(db.select().from(schema.checklistItems).all().map((c) => [c.key, c]));
-  const gaps = db
-    .select()
-    .from(schema.gapItems)
-    .where(eq(schema.gapItems.briefId, brief.id))
-    .orderBy(asc(schema.gapItems.checklistKey))
-    .all()
-    .sort(
+  const checklist = new Map((await db.select().from(schema.checklistItems).all()).map((c) => [c.key, c]));
+  const gaps = (await db.select().from(schema.gapItems).where(eq(schema.gapItems.briefId, brief.id)).orderBy(asc(schema.gapItems.checklistKey)).all()).sort(
       (a, b) =>
         Number(a.status === "specified") - Number(b.status === "specified") ||
         ORDER[a.criticality] - ORDER[b.criticality] ||

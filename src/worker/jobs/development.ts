@@ -17,27 +17,27 @@ import { newId } from "@/lib/ids";
 import { eurosToCents } from "@/lib/money";
 import { getSetting } from "@/lib/settings";
 import type { JobHandler } from "../context";
-import { throwIfCancelled } from "../context";
+import { continueLater, LONG_STEP_MS, throwIfCancelled } from "../context";
 
 const ROLE = `Sei il project manager senior e il producer di Factory Studios / YEG!, agenzia italiana di eventi corporate.
 Trasformi il concept scelto in un evento concreto, realizzabile e coerente in ogni dettaglio.
 Rispetti la concept bible, la scaletta e i vincoli del brief; scrivi in italiano, in modo operativo.`;
 
-function loadProject(projectId: string | null) {
+async function loadProject(projectId: string | null) {
   if (!projectId) throw new Error("Progetto mancante");
-  const project = getDb().select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+  const project = await getDb().select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
   if (!project) throw new Error("Progetto non trovato");
   return project;
 }
 
 /** Scaletta giorno per giorno; in rigenerazione gli slot esistenti mantengono il loro ID. */
 export const agendaDevelop: JobHandler = async (ctx) => {
-  const project = loadProject(ctx.projectId);
+  const project = await loadProject(ctx.projectId);
   const db = getDb();
-  const brief = briefContext(project.id);
-  const bible = bibleContext(project.id);
+  const brief = await briefContext(project.id);
+  const bible = await bibleContext(project.id);
   if (!brief || !bible) throw new Error("Servono il brief e la concept bible");
-  const existing = agendaSlotsOf(project.id);
+  const existing = await agendaSlotsOf(project.id);
   const instructions = typeof ctx.input.instructions === "string" ? ctx.input.instructions.trim() : "";
 
   ctx.progress(15, "Scrittura della scaletta");
@@ -67,48 +67,49 @@ Se esistono già slot, mantieni l'ID (keepId) di quelli che restano, anche se ne
 
   const dates = new Map(agenda.days.map((d) => [d.day, d.date]));
   const keep = new Set(agenda.slots.map((s) => s.keepId).filter(Boolean));
-  db.transaction((tx) => {
-    for (const old of existing) if (!keep.has(old.id)) tx.delete(schema.agendaSlots).where(eq(schema.agendaSlots.id, old.id)).run();
-    agenda.slots
-      .sort((a, b) => a.day - b.day || a.start.localeCompare(b.start))
-      .forEach((s, i) => {
-        const values = {
-          projectId: project.id,
-          day: s.day,
-          date: dates.get(s.day) ?? null,
-          startTime: s.start,
-          endTime: s.end,
-          kind: s.kind,
-          title: s.title,
-          description: s.description,
-          room: s.room,
-          pax: s.pax,
-          narrativeBeat: s.narrativeBeat,
-          position: i + 1,
-        };
-        if (s.keepId && existing.some((e) => e.id === s.keepId)) {
-          tx.update(schema.agendaSlots).set(values).where(eq(schema.agendaSlots.id, s.keepId)).run();
-        } else {
-          tx.insert(schema.agendaSlots).values({ id: newId("slt"), ...values }).run();
-        }
-      });
+  await db.transaction(async (tx) => {
+    for (const old of existing) if (!keep.has(old.id)) await tx.delete(schema.agendaSlots).where(eq(schema.agendaSlots.id, old.id)).run();
+    const sorted = agenda.slots.sort((a, b) => a.day - b.day || a.start.localeCompare(b.start));
+    for (const [i, s] of sorted.entries()) {
+      const values = {
+        projectId: project.id,
+        day: s.day,
+        date: dates.get(s.day) ?? null,
+        startTime: s.start,
+        endTime: s.end,
+        kind: s.kind,
+        title: s.title,
+        description: s.description,
+        room: s.room,
+        pax: s.pax,
+        narrativeBeat: s.narrativeBeat,
+        position: i + 1,
+      };
+      if (s.keepId && existing.some((e) => e.id === s.keepId)) {
+        await tx.update(schema.agendaSlots).set(values).where(eq(schema.agendaSlots.id, s.keepId)).run();
+      } else {
+        await tx.insert(schema.agendaSlots).values({ id: newId("slt"), ...values }).run();
+      }
+    }
   });
-  if (project.status === "concept") db.update(schema.projects).set({ status: "sviluppo" }).where(eq(schema.projects.id, project.id)).run();
+  if (project.status === "concept") await db.update(schema.projects).set({ status: "sviluppo" }).where(eq(schema.projects.id, project.id)).run();
   return { slots: agenda.slots.length, days: agenda.days.length, notes: agenda.notes };
 };
 
 /** I sei moduli della proposta, agganciati agli slot. Si può rigenerare un solo modulo con indicazioni. */
 export const modulesDevelop: JobHandler = async (ctx) => {
-  const project = loadProject(ctx.projectId);
+  const project = await loadProject(ctx.projectId);
   const db = getDb();
-  const brief = briefContext(project.id);
-  const bible = bibleContext(project.id);
-  const agenda = agendaContext(project.id);
+  const brief = await briefContext(project.id);
+  const bible = await bibleContext(project.id);
+  const agenda = await agendaContext(project.id);
   if (!brief || !bible || !agenda) throw new Error("Servono brief, concept bible e scaletta");
   const kinds = ((ctx.input.kinds as ModuleKind[] | undefined) ?? MODULE_ORDER).filter((k) => MODULE_ORDER.includes(k));
+  // in cloud il lavoro può continuare in più esecuzioni: qui i moduli già scritti
+  const already = ((ctx.input.done as ModuleKind[] | undefined) ?? []).filter((k) => kinds.includes(k));
   const instructions = typeof ctx.input.instructions === "string" ? ctx.input.instructions.trim() : "";
 
-  const checklist = db
+  const checklist = await db
     .select()
     .from(schema.checklistItems)
     .where(
@@ -119,15 +120,15 @@ export const modulesDevelop: JobHandler = async (ctx) => {
     )
     .orderBy(asc(schema.checklistItems.position))
     .all();
-  const venues = venuesArchiveText();
-  const formats = db.select().from(schema.formatIdeas).where(eq(schema.formatIdeas.active, true)).all();
+  const venues = await venuesArchiveText();
+  const formats = await db.select().from(schema.formatIdeas).where(eq(schema.formatIdeas.active, true)).all();
   const schemas = moduleSchemas({
     slots: agenda.slots.map((s) => s.id),
     categories: checklist.map((c) => c.key),
     venues: venues.venues.map((v) => v.id),
     formats: formats.map((f) => f.id),
   });
-  const rules = getSetting("compliance.sectors")[project.sector] ?? [];
+  const rules = (await getSetting("compliance.sectors"))[project.sector] ?? [];
 
   // prefisso identico per tutti i moduli: la cache di contesto lavora e il racconto resta coerente
   const prefix = [
@@ -139,15 +140,18 @@ export const modulesDevelop: JobHandler = async (ctx) => {
     `\nCATEGORIE DI COSTO (checklist):\n${checklist.map((c) => `- ${c.key}: ${c.label}`).join("\n")}`,
     `\n${venues.text}`,
     `\nFORMAT DELLA LIBRERIA:\n${formats.map((f) => `[${f.id}] ${f.name}: ${f.description}`).join("\n")}`,
-    `\n${benchmarksText()}`,
+    `\n${await benchmarksText()}`,
   ].join("\n");
 
-  const done: string[] = [];
-  let step = 0;
+  const done: ModuleKind[] = [...already];
   for (const kind of kinds) {
+    if (done.includes(kind)) continue;
     throwIfCancelled(ctx.signal);
-    ctx.progress(5 + (step / kinds.length) * 90, `Modulo: ${MODULE_BRIEFS[kind].split(":")[0].toLowerCase()}`);
-    const current = db.select().from(schema.modules).where(and(eq(schema.modules.projectId, project.id), eq(schema.modules.kind, kind))).get();
+    if (done.length > already.length && ctx.timeLeft() < LONG_STEP_MS) {
+      return continueLater({ ...ctx.input, kinds, done }, `Moduli scritti: ${done.length} di ${kinds.length}. Continua…`);
+    }
+    ctx.progress(5 + (done.length / kinds.length) * 90, `Modulo: ${MODULE_BRIEFS[kind].split(":")[0].toLowerCase()}`);
+    const current = await db.select().from(schema.modules).where(and(eq(schema.modules.projectId, project.id), eq(schema.modules.kind, kind))).get();
     const data = await generateObject(
       { task: `module.${kind}`, runId: ctx.runId, projectId: project.id, signal: ctx.signal, mask: maskFor(project) },
       {
@@ -166,19 +170,18 @@ Elenca in "components" le voci di costo che servono a realizzarlo (una per forni
         ].join("\n"),
       },
     );
-    saveModule(project.id, kind, data, ctx.runId);
+    await saveModule(project.id, kind, data, ctx.runId);
     done.push(kind);
-    step++;
   }
   return { modules: done };
 };
 
-function saveModule(projectId: string, kind: ModuleKind, data: Record<string, unknown> & { components: ComponentData[] }, runId: string) {
+async function saveModule(projectId: string, kind: ModuleKind, data: Record<string, unknown> & { components: ComponentData[] }, runId: string) {
   const db = getDb();
-  const bible = bibleContext(projectId)?.bible;
+  const bible = (await bibleContext(projectId))?.bible;
   const { components, ...rest } = data;
-  db.transaction((tx) => {
-    const existing = tx.select().from(schema.modules).where(and(eq(schema.modules.projectId, projectId), eq(schema.modules.kind, kind))).get();
+  await db.transaction(async (tx) => {
+    const existing = await tx.select().from(schema.modules).where(and(eq(schema.modules.projectId, projectId), eq(schema.modules.kind, kind))).get();
     const moduleId = existing?.id ?? newId("mod");
     const values = {
       projectId,
@@ -188,13 +191,14 @@ function saveModule(projectId: string, kind: ModuleKind, data: Record<string, un
       builtFrom: { bible: bible?.version ?? 0 },
       runId,
     };
-    if (existing) tx.update(schema.modules).set(values).where(eq(schema.modules.id, moduleId)).run();
-    else tx.insert(schema.modules).values({ id: moduleId, ...values }).run();
-    tx.delete(schema.components).where(eq(schema.components.moduleId, moduleId)).run();
-    components.forEach((c, i) =>
-      tx
-        .insert(schema.components)
-        .values({
+    if (existing) await tx.update(schema.modules).set(values).where(eq(schema.modules.id, moduleId)).run();
+    else await tx.insert(schema.modules).values({ id: moduleId, ...values }).run();
+    await tx.delete(schema.components).where(eq(schema.components.moduleId, moduleId)).run();
+    if (!components.length) return;
+    await tx
+      .insert(schema.components)
+      .values(
+        components.map((c, i) => ({
           id: newId("cmp"),
           projectId,
           moduleId,
@@ -219,8 +223,8 @@ function saveModule(projectId: string, kind: ModuleKind, data: Record<string, un
           pricingModelHint: c.pricingModel,
           optional: c.optional,
           position: i + 1,
-        })
-        .run(),
-    );
+        })),
+      )
+      .run();
   });
 }

@@ -9,7 +9,10 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field, Input, Textarea } from "@/components/ui/field";
 import { SubmitButton } from "@/components/submit-button";
+import { UploadField } from "@/components/upload-field";
+import { usesBlob } from "@/lib/storage";
 import { formatDate } from "@/lib/labels";
+import { requireUser } from "@/auth/session";
 
 type Evidence = BriefData["evidence"][number] & { verified?: boolean };
 
@@ -55,9 +58,9 @@ const euro = (n: number | null) =>
   n == null ? null : new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n);
 
 export default async function BriefPage(props: PageProps<"/projects/[id]/brief">) {
+  await requireUser();
   const { id } = await props.params;
-  const docs = projectDocuments(id);
-  const brief = latestBrief(id);
+  const [docs, brief] = await Promise.all([projectDocuments(id), latestBrief(id)]);
   const data = brief?.data as (Omit<BriefData, "evidence"> & { evidence: Evidence[] }) | undefined;
   const aiReady = hasApiKey();
 
@@ -281,13 +284,7 @@ export default async function BriefPage(props: PageProps<"/projects/[id]/brief">
           <CardBody className="border-t border-line bg-paper/50">
             <form action={addDocumentsAction.bind(null, id)} className="flex flex-col gap-2">
               <Textarea name="briefText" placeholder="Altro testo (risposte del cliente, email…)" className="min-h-20" />
-              <input
-                type="file"
-                name="files"
-                multiple
-                accept=".pdf,.docx,.txt,.eml,application/pdf"
-                className="text-[12px] file:mr-2 file:rounded-sm file:border-0 file:bg-n100 file:px-2 file:py-1.5"
-              />
+              <UploadField online={usesBlob()} className="text-[12px] file:mr-2 file:rounded-sm file:border-0 file:bg-n100 file:px-2 file:py-1.5" />
               <SubmitButton variant="secondary" size="sm" pendingLabel="Caricamento…">
                 Aggiungi
               </SubmitButton>

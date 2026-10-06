@@ -2,10 +2,14 @@ import Link from "next/link";
 import { asc, desc, eq, inArray } from "drizzle-orm";
 import { Download, Mail, Phone, Search } from "lucide-react";
 import { hasApiKey } from "@/ai/qwen";
+import { requireUser } from "@/auth/session";
 import { getDb, schema } from "@/db/client";
+import { platformsForCategories } from "@/db/queries/platforms";
+import { getProject } from "@/db/queries/projects";
 import { computeForQuote, currentQuote } from "@/db/queries/quotes";
 import {
   addLinkAction,
+  addPlatformSupplierAction,
   draftRfqAction,
   logInteractionAction,
   removeLinkAction,
@@ -19,7 +23,7 @@ import { CopyButton } from "@/components/copy-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input, Select } from "@/components/ui/field";
 import { SubmitButton } from "@/components/submit-button";
-import { SUPPLIER_KIND_LABELS, formatDate, formatDateTime } from "@/lib/labels";
+import { PLATFORM_CATEGORY_LABELS, SUPPLIER_KIND_LABELS, formatDate, formatDateTime, platformCategoryFor, platformSearchLink } from "@/lib/labels";
 import { formatCents } from "@/lib/money";
 
 const STATUS: Record<string, { label: string; tone: Tone }> = {
@@ -38,16 +42,18 @@ const SOURCE: Record<string, { label: string; tone: Tone }> = {
 const CHANNELS = { phone: "Telefono", email: "Email", whatsapp: "WhatsApp", meeting: "Incontro", other: "Altro" };
 
 export default async function ProjectSuppliersPage(props: PageProps<"/projects/[id]/suppliers">) {
+  await requireUser();
   const { id } = await props.params;
   const db = getDb();
   const aiReady = hasApiKey();
-  const quote = currentQuote(id);
+  const quote = await currentQuote(id);
   if (!quote) return <EmptyState title="Prima il preventivo">I fornitori si collegano alle voci del preventivo.</EmptyState>;
-  const computed = computeForQuote(quote.id)!;
+  const computed = await computeForQuote(quote.id);
+  if (!computed) return <EmptyState title="Preventivo non trovato">Riprova dalla pagina del preventivo.</EmptyState>;
   const result = new Map(computed.totals.lines.map((l) => [l.id, l]));
   const lineIds = computed.lines.map((l) => l.id);
   const links = lineIds.length
-    ? db
+    ? await db
         .select({ link: schema.supplierLinks, supplier: schema.suppliers })
         .from(schema.supplierLinks)
         .innerJoin(schema.suppliers, eq(schema.suppliers.id, schema.supplierLinks.supplierId))
@@ -55,15 +61,30 @@ export default async function ProjectSuppliersPage(props: PageProps<"/projects/[
         .all()
     : [];
   const supplierIds = [...new Set(links.map((l) => l.supplier.id))];
-  const contacts = supplierIds.length
-    ? db.select().from(schema.supplierContacts).where(inArray(schema.supplierContacts.supplierId, supplierIds)).all()
-    : [];
   const linkIds = links.map((l) => l.link.id);
-  const interactions = linkIds.length
-    ? db.select().from(schema.supplierInteractions).where(inArray(schema.supplierInteractions.linkId, linkIds)).orderBy(desc(schema.supplierInteractions.at)).all()
-    : [];
-  const drafts = linkIds.length ? db.select().from(schema.rfqDrafts).where(inArray(schema.rfqDrafts.linkId, linkIds)).orderBy(desc(schema.rfqDrafts.createdAt)).all() : [];
-  const allSuppliers = db.select({ id: schema.suppliers.id, name: schema.suppliers.name, kind: schema.suppliers.kind }).from(schema.suppliers).orderBy(asc(schema.suppliers.kind), asc(schema.suppliers.name)).all();
+  const [contacts, interactions, drafts, allSuppliers, project, componentRows, platformRows] = await Promise.all([
+    supplierIds.length ? db.select().from(schema.supplierContacts).where(inArray(schema.supplierContacts.supplierId, supplierIds)).all() : [],
+    linkIds.length
+      ? db.select().from(schema.supplierInteractions).where(inArray(schema.supplierInteractions.linkId, linkIds)).orderBy(desc(schema.supplierInteractions.at)).all()
+      : [],
+    linkIds.length ? db.select().from(schema.rfqDrafts).where(inArray(schema.rfqDrafts.linkId, linkIds)).orderBy(desc(schema.rfqDrafts.createdAt)).all() : [],
+    db
+      .select({ id: schema.suppliers.id, name: schema.suppliers.name, kind: schema.suppliers.kind })
+      .from(schema.suppliers)
+      .orderBy(asc(schema.suppliers.kind), asc(schema.suppliers.name))
+      .all(),
+    getProject(id),
+    db.select({ id: schema.components.id, category: schema.components.category }).from(schema.components).where(eq(schema.components.projectId, id)).all(),
+    platformsForCategories(Object.keys(PLATFORM_CATEGORY_LABELS)),
+  ]);
+  const categoryOfComponent = new Map(componentRows.map((c) => [c.id, c.category]));
+  /** Piattaforme da proporre per una voce: della sua categoria, prima quelle in uso; poi le trasversali in uso. */
+  const platformsFor = (componentId: string | null) => {
+    const cat = platformCategoryFor(componentId ? categoryOfComponent.get(componentId) : null);
+    const specific = platformRows.filter((p) => p.categories.includes(cat) && cat !== "generale");
+    const general = platformRows.filter((p) => p.categories.includes("generale") && p.status === "in_uso" && !specific.includes(p));
+    return { cat, list: [...specific, ...general] };
+  };
 
   const counts = Object.fromEntries(Object.keys(STATUS).map((k) => [k, links.filter((l) => l.link.status === k).length]));
   const withoutSupplier = computed.lines.filter((l) => !links.some((x) => x.link.quoteLineId === l.id)).length;
@@ -127,6 +148,63 @@ export default async function ProjectSuppliersPage(props: PageProps<"/projects/[
                     </div>
 
                     {lineLinks.length === 0 && <div className="mt-2 text-[12px] text-n500">Nessun fornitore collegato.</div>}
+                    {(() => {
+                      const { cat, list } = platformsFor(line.componentId);
+                      const shown = list.slice(0, 5);
+                      return (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[12px]">
+                          <span className="text-n500">Dove cercare:</span>
+                          {shown.length === 0 && (
+                            <a href={`/library/platforms?categoria=${cat}`} className="text-violet hover:underline">
+                              scegli le piattaforme per {PLATFORM_CATEGORY_LABELS[cat]?.toLowerCase() ?? cat}
+                            </a>
+                          )}
+                          {shown.map((p) => {
+                            const href = platformSearchLink(p.searchUrl, line.description, project?.city) ?? p.url;
+                            return (
+                              <a
+                                key={p.id}
+                                href={href}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={p.description ?? undefined}
+                                className={`rounded-xs px-1.5 py-0.5 ${p.status === "in_uso" ? "bg-ok-soft text-ok" : "bg-n100 text-n700"} hover:underline`}
+                              >
+                                {p.name}
+                                {p.searchUrl ? " ↗︎" : ""}
+                              </a>
+                            );
+                          })}
+                          {list.length > shown.length && (
+                            <a href={`/library/platforms?categoria=${cat}`} className="text-n500 hover:text-violet hover:underline">
+                              altre {list.length - shown.length}
+                            </a>
+                          )}
+                          <details className="w-full">
+                            <summary className="cursor-pointer text-n500 hover:text-ink">Aggiungi un fornitore trovato su una piattaforma</summary>
+                            <form action={addPlatformSupplierAction.bind(null, id, line.id)} className="mt-2 grid gap-2 md:grid-cols-[1.2fr_1fr_1fr_1fr_auto] md:items-end">
+                              <Input name="name" required placeholder="Nome del fornitore" className="h-8 text-[12px]" />
+                              <Input name="website" placeholder="Sito (facoltativo)" className="h-8 text-[12px]" />
+                              <Input name="contact" placeholder="Telefono o email" className="h-8 text-[12px]" />
+                              <Select name="platformId" defaultValue={shown[0]?.id ?? ""} className="h-8 text-[12px]">
+                                <option value="">Trovato altrove</option>
+                                {list.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.name}
+                                  </option>
+                                ))}
+                              </Select>
+                              <SubmitButton variant="secondary" size="sm">
+                                Aggiungi
+                              </SubmitButton>
+                              <label className="flex items-center gap-1 text-n500 md:col-span-5">
+                                <input type="checkbox" name="calledOk" /> numero già confermato al telefono (altrimenti resta “da verificare”)
+                              </label>
+                            </form>
+                          </details>
+                        </div>
+                      );
+                    })()}
                     <div className="mt-2 flex flex-col gap-2">
                       {lineLinks.map(({ link, supplier }) => {
                         const phones = contacts.filter((c) => c.supplierId === supplier.id && (c.type === "phone" || c.type === "mobile") && c.status !== "invalid").sort((a, b) => Number(b.status === "verified") - Number(a.status === "verified"));

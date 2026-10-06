@@ -13,19 +13,19 @@ import { throwIfCancelled } from "../context";
 const ROLE =
   "Sei un project manager senior di Factory Studios / YEG!, agenzia italiana di eventi corporate (pharma, finance, automotive). Scrivi in italiano.";
 
-function loadProject(projectId: string | null) {
+async function loadProject(projectId: string | null) {
   if (!projectId) throw new Error("Progetto mancante");
-  const project = getDb().select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+  const project = await getDb().select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
   if (!project) throw new Error("Progetto non trovato");
   return project;
 }
 
 /** Estrae il brief strutturato, con citazioni controllate sul testo dei documenti. */
 export const briefExtract: JobHandler = async (ctx) => {
-  const project = loadProject(ctx.projectId);
+  const project = await loadProject(ctx.projectId);
   const db = getDb();
   ctx.progress(5, "Lettura dei documenti");
-  const docs = documentsText(project.id);
+  const docs = await documentsText(project.id);
   if (!docs.text) throw new Error("Nessun testo nei documenti del progetto: incolla il brief o carica un PDF/DOCX");
 
   ctx.progress(15, "Analisi del brief con Qwen");
@@ -49,17 +49,18 @@ Regole:
   throwIfCancelled(ctx.signal);
 
   ctx.progress(80, "Controllo delle citazioni");
-  const pages = projectDocuments(project.id).flatMap((d) => d.pages);
+  const pages = (await projectDocuments(project.id)).flatMap((d) => d.pages);
   const evidence = brief.evidence.map((e) => {
     const check = verifyQuote(e.quote, pages, e.page);
     return { ...e, page: check.page ?? e.page, verified: check.verified };
   });
   const verified = evidence.filter((e) => e.verified).length;
 
-  const previous = latestBrief(project.id);
+  const previous = await latestBrief(project.id);
   const briefId = newId("brf");
   const data: BriefData & { evidence: typeof evidence } = { ...brief, evidence };
-  db.insert(schema.briefs)
+  await db
+    .insert(schema.briefs)
     .values({ id: briefId, projectId: project.id, version: (previous?.version ?? 0) + 1, status: "draft", data, runId: ctx.runId })
     .run();
 
@@ -81,19 +82,19 @@ Regole:
     patch.isTender = true;
     patch.tenderDeadline = brief.tender.deadline;
   }
-  db.update(schema.projects).set(patch).where(eq(schema.projects.id, project.id)).run();
+  await db.update(schema.projects).set(patch).where(eq(schema.projects.id, project.id)).run();
 
   return { briefId, citations: evidence.length, verified };
 };
 
 /** Lacune sulla checklist master: una voce per ogni componente, con domande al cliente. */
 export const gapAnalyze: JobHandler = async (ctx) => {
-  const project = loadProject(ctx.projectId);
+  const project = await loadProject(ctx.projectId);
   const db = getDb();
-  const brief = latestBrief(project.id);
+  const brief = await latestBrief(project.id);
   if (!brief) throw new Error("Prima serve l'analisi del brief");
 
-  const checklist = db
+  const checklist = await db
     .select()
     .from(schema.checklistItems)
     .where(
@@ -104,9 +105,9 @@ export const gapAnalyze: JobHandler = async (ctx) => {
     )
     .orderBy(asc(schema.checklistItems.position))
     .all();
-  const rules = getSetting("compliance.sectors")[project.sector] ?? [];
-  const docs = documentsText(project.id);
-  const context = briefContext(project.id);
+  const rules = (await getSetting("compliance.sectors"))[project.sector] ?? [];
+  const docs = await documentsText(project.id);
+  const context = await briefContext(project.id);
 
   ctx.progress(15, `Verifica di ${checklist.length} voci della checklist`);
   const result = await generateObject(
@@ -135,14 +136,15 @@ Scrivi infine un'email al cliente, cordiale e professionale, con le domande ragg
   throwIfCancelled(ctx.signal);
 
   ctx.progress(85, "Salvataggio");
-  const pages = projectDocuments(project.id).flatMap((d) => d.pages);
-  db.transaction((tx) => {
-    tx.delete(schema.gapItems).where(eq(schema.gapItems.briefId, brief.id)).run();
+  const pages = (await projectDocuments(project.id)).flatMap((d) => d.pages);
+  await db.transaction(async (tx) => {
+    await tx.delete(schema.gapItems).where(eq(schema.gapItems.briefId, brief.id)).run();
     for (const item of checklist) {
       const g = (result.items as Record<string, (typeof result.items)[keyof typeof result.items]>)[item.key];
       if (!g) continue;
       const check = verifyQuote(g.evidenceQuote, pages, g.evidencePage);
-      tx.insert(schema.gapItems)
+      await tx
+        .insert(schema.gapItems)
         .values({
           id: newId("gap"),
           projectId: project.id,
@@ -157,7 +159,8 @@ Scrivi infine un'email al cliente, cordiale e professionale, con le domande ragg
         })
         .run();
     }
-    tx.update(schema.briefs)
+    await tx
+      .update(schema.briefs)
       .set({ analysis: { readiness: result.readiness, clientEmail: result.clientEmail, analyzedAt: new Date().toISOString() } })
       .where(eq(schema.briefs.id, brief.id))
       .run();

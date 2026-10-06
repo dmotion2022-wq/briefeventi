@@ -7,11 +7,13 @@ import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { PageHeader } from "@/components/ui/page-header";
 import { COST_LEVEL_LABELS, FORMAT_TYPE_LABELS } from "@/lib/labels";
 import { cn } from "@/lib/cn";
+import { requireUser } from "@/auth/session";
 
 export const metadata = { title: "Format innovativi" };
 
-export default function FormatsPage() {
-  const formats = listFormats();
+export default async function FormatsPage() {
+  await requireUser();
+  const formats = await listFormats();
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader

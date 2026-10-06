@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Instrument_Sans, JetBrains_Mono, Syne } from "next/font/google";
+import { authEnabled, getCurrentUser } from "@/auth/session";
 import { Sidebar } from "@/components/shell/sidebar";
 import "./globals.css";
 
@@ -19,7 +20,7 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
-// Ogni pagina legge dal database locale: niente pre-rendering statico.
+// Ogni pagina legge dal database: niente pre-rendering statico.
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
@@ -27,11 +28,13 @@ export const metadata: Metadata = {
   description: "Factory Studios · dal brief alla proposta, al preventivo e ai fornitori",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  const online = authEnabled();
+  const user = online ? await getCurrentUser().catch(() => null) : null;
   return (
     <html lang="it" className={`${syne.variable} ${instrumentSans.variable} ${jetbrainsMono.variable} antialiased`}>
       <body className="flex min-h-screen">
-        <Sidebar />
+        <Sidebar online={online} user={user ? { name: user.name, admin: user.role === "admin" } : null} />
         <main className="min-w-0 flex-1 px-8 py-7">{children}</main>
       </body>
     </html>

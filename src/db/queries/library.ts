@@ -22,27 +22,28 @@ export function listSuppliers(opts: { q?: string; kind?: string } = {}) {
     .all();
 }
 
-export function getSupplierDetail(id: string) {
+export async function getSupplierDetail(id: string) {
   const db = getDb();
-  const supplier = db.select().from(schema.suppliers).where(eq(schema.suppliers.id, id)).get();
+  const supplier = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, id)).get();
   if (!supplier) return null;
-  return {
-    supplier,
-    contacts: db
+  const [contacts, venues, benchmarks, links, platform] = await Promise.all([
+    db
       .select()
       .from(schema.supplierContacts)
       .where(eq(schema.supplierContacts.supplierId, id))
       .orderBy(desc(sql`${schema.supplierContacts.status} = 'verified'`), asc(schema.supplierContacts.type))
       .all(),
-    venues: db.select().from(schema.venues).where(eq(schema.venues.supplierId, id)).all(),
-    benchmarks: db.select().from(schema.priceBenchmarks).where(eq(schema.priceBenchmarks.supplierId, id)).all(),
-    links: db
+    db.select().from(schema.venues).where(eq(schema.venues.supplierId, id)).all(),
+    db.select().from(schema.priceBenchmarks).where(eq(schema.priceBenchmarks.supplierId, id)).all(),
+    db
       .select({ link: schema.supplierLinks, project: schema.projects })
       .from(schema.supplierLinks)
       .innerJoin(schema.projects, eq(schema.projects.id, schema.supplierLinks.projectId))
       .where(eq(schema.supplierLinks.supplierId, id))
       .all(),
-  };
+    supplier.platformId ? db.select().from(schema.platforms).where(eq(schema.platforms.id, supplier.platformId)).get() : undefined,
+  ]);
+  return { supplier, contacts, venues, benchmarks, links, platform };
 }
 
 export function listVenues(opts: { q?: string } = {}) {
@@ -68,10 +69,10 @@ export const listBenchmarks = () =>
 
 export const listFormats = () => getDb().select().from(schema.formatIdeas).orderBy(asc(schema.formatIdeas.type), asc(schema.formatIdeas.name)).all();
 
-export const documentsByIds = (ids: (string | null)[]) => {
+export const documentsByIds = async (ids: (string | null)[]) => {
   const valid = ids.filter((x): x is string => !!x);
   if (!valid.length) return new Map<string, typeof schema.documents.$inferSelect>();
-  const rows = getDb()
+  const rows = await getDb()
     .select()
     .from(schema.documents)
     .where(sql`${schema.documents.id} in ${valid}`)

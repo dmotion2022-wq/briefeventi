@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { dataPath, ensureDataDirs } from "@/lib/paths";
+import { isIP } from "node:net";
+import { saveFile } from "@/lib/storage";
 import { extractEmails, extractPhones, normalizePhone } from "./phone";
 
 // Verifica dei contatti sul sito ufficiale: si scarica la pagina, se ne salva una copia come
@@ -63,8 +62,28 @@ export function phonesInPage(html: string): { phones: PagePhones[]; emails: stri
 
 export type FetchedPage = { url: string; html: string; evidencePath: string };
 
+const PRIVATE_IPV4 = /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.)/;
+
+/** Solo siti pubblici: niente indirizzi IP interni, localhost o nomi di rete locale (il server non deve aprire la sua rete). */
+export function isPublicWebUrl(raw: string) {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host.includes(".") || host === "localhost" || /\.(localhost|local|internal|lan|home|test)$/.test(host)) return false;
+  const ip = isIP(host);
+  if (ip === 4) return !PRIVATE_IPV4.test(host);
+  if (ip === 6) return false;
+  return true;
+}
+
 /** Scarica una pagina (timeout e limite di dimensione) e ne salva una copia come prova. */
 export async function fetchPage(url: string, signal?: AbortSignal): Promise<FetchedPage | null> {
+  if (!isPublicWebUrl(url)) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12_000);
   const onAbort = () => controller.abort();
@@ -75,14 +94,16 @@ export async function fetchPage(url: string, signal?: AbortSignal): Promise<Fetc
       redirect: "follow",
       headers: { "User-Agent": "Mozilla/5.0 (Macintosh) EventStudio/1.0", "Accept-Language": "it,en;q=0.8" },
     });
-    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("html")) return null;
+    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("html") || !isPublicWebUrl(res.url)) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length > 3_000_000) return null;
     const html = buf.toString("utf8");
-    ensureDataDirs();
     const name = `${crypto.createHash("sha256").update(res.url + html).digest("hex").slice(0, 24)}.html`;
-    const rel = path.join("evidence", name);
-    fs.writeFileSync(dataPath(rel), `<!-- fonte: ${res.url} · scaricata il ${new Date().toISOString()} -->\n${html}`);
+    const rel = await saveFile(
+      `evidence/${name}`,
+      `<!-- fonte: ${res.url} · scaricata il ${new Date().toISOString()} -->\n${html}`,
+      "text/html; charset=utf-8",
+    );
     return { url: res.url, html, evidencePath: rel };
   } catch {
     return null;

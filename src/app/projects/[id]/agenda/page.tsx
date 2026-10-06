@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input, Select, Textarea } from "@/components/ui/field";
 import { SubmitButton } from "@/components/submit-button";
 import { formatDate } from "@/lib/labels";
+import { requireUser } from "@/auth/session";
 
 const KIND: Record<string, { label: string; tone: Tone }> = {
   registration: { label: "Accoglienza", tone: "neutral" },
@@ -48,9 +49,9 @@ function SlotForm({ projectId, slot }: { projectId: string; slot?: typeof schema
 }
 
 export default async function AgendaPage(props: PageProps<"/projects/[id]/agenda">) {
+  await requireUser();
   const { id } = await props.params;
-  const slots = agendaSlotsOf(id);
-  const bible = latestBible(id);
+  const [slots, bible] = await Promise.all([agendaSlotsOf(id), latestBible(id)]);
   const aiReady = hasApiKey();
   const days = [...new Set(slots.map((s) => s.day))].sort((a, b) => a - b);
 

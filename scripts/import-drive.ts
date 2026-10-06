@@ -4,11 +4,14 @@
 //   npm run import:drive -- --apply --files → applica e scarica/legge i PDF
 //   npm run import:drive -- --contacts → ricalcola i contatti dai PDF già archiviati
 import "@/lib/load-env";
+import { prepareDb } from "@/db/prepare";
 import { runDriveImport } from "@/domain/import/run-import";
 import { reextractPdfContacts } from "@/domain/import/drive-files";
 
+await prepareDb();
+
 if (process.argv.includes("--contacts")) {
-  const r = reextractPdfContacts();
+  const r = await reextractPdfContacts();
   console.log(`Contatti ricalcolati da ${r.documents} PDF: ${r.phones} telefoni, ${r.emails} email`);
   process.exit(0);
 }
@@ -31,9 +34,11 @@ const { diff, files: report } = await runDriveImport({
 });
 
 console.log(apply ? "\nImport applicato" : "\nProva a vuoto (nessuna modifica). Rilancia con --apply per applicare.");
-console.log(fmt("Proposte passate", diff.works));
-console.log(fmt("Location e hotel", diff.venues));
-console.log(fmt("Listino", diff.benchmarks));
+if (diff) {
+  console.log(fmt("Proposte passate", diff.works));
+  console.log(fmt("Location e hotel", diff.venues));
+  console.log(fmt("Listino", diff.benchmarks));
+}
 if (report) {
   console.log(`\nPDF: ${report.listed} trovati, ${report.downloaded} scaricati, ${report.reused} già presenti`);
   console.log(`Contatti estratti dai PDF: ${report.contacts.phones} telefoni, ${report.contacts.emails} email`);

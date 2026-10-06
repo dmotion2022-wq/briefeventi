@@ -7,6 +7,7 @@ import { extractEmails, extractPhones, formatPhoneDisplay } from "@/domain/conta
 import { newId } from "@/lib/ids";
 import { dataPath, ensureDataDirs } from "@/lib/paths";
 import type { DriveSource } from "@/lib/settings-defaults";
+import { usesBlob } from "@/lib/storage";
 import { sourceKeyFor } from "./normalize";
 
 // Download dei PDF dalle cartelle pubbliche del Drive, testo per pagina e contatti trovati
@@ -41,8 +42,10 @@ export async function listPublicFolder(folderId: string, signal?: AbortSignal): 
   return entries;
 }
 
-/** Scarica un file pubblico, con cache locale per ID (un nuovo import non riscarica nulla). */
+/** Scarica un file pubblico. Sul Mac tiene una cache per ID (un nuovo import non riscarica nulla). */
 export async function downloadDriveFile(id: string, signal?: AbortSignal): Promise<Buffer> {
+  // in cloud niente cache: il PDF finisce comunque nell'archivio dei documenti
+  if (usesBlob() || process.env.VERCEL) return fetchDriveFile(id, signal);
   const cached = dataPath("cache", "drive", `${id}.pdf`);
   if (fs.existsSync(cached)) return fs.readFileSync(cached);
   const buffer = await fetchDriveFile(id, signal);
@@ -66,8 +69,12 @@ async function fetchDriveFile(id: string, signal?: AbortSignal): Promise<Buffer>
 function readLocal(localRoot: string, folder: FolderKey, name: string): Buffer | null {
   if (!localRoot) return null;
   const sub = { works: "WORKS", location: "LOCATIONS / HOTEL", budgets: "BUDGETS" }[folder];
-  for (const candidate of [path.join(localRoot, sub, name), path.join(localRoot, sub.replace(" / ", "_"), name)]) {
-    if (fs.existsSync(candidate)) return fs.readFileSync(candidate);
+  // cartella scelta da chi usa l'app sul Mac: fuori dal pacchetto del server (turbopackIgnore)
+  for (const candidate of [
+    path.join(/*turbopackIgnore: true*/ localRoot, sub, name),
+    path.join(/*turbopackIgnore: true*/ localRoot, sub.replace(" / ", "_"), name),
+  ]) {
+    if (fs.existsSync(/*turbopackIgnore: true*/ candidate)) return fs.readFileSync(/*turbopackIgnore: true*/ candidate);
   }
   return null;
 }
@@ -91,9 +98,9 @@ function mainWebsite(texts: string[], links: string[]): string | null {
 const MAX_CONTACTS_PER_TYPE = 10;
 
 /** Contatti presenti nel testo del PDF, salvati sul fornitore con pagina e frammento. */
-export function contactsFromDocument(documentId: string, supplierId: string, links: string[] = []) {
+export async function contactsFromDocument(documentId: string, supplierId: string, links: string[] = []) {
   const db = getDb();
-  const pages = documentPages(documentId);
+  const pages = await documentPages(documentId);
   let phones = 0;
   let emails = 0;
   const now = new Date().toISOString();
@@ -114,7 +121,7 @@ export function contactsFromDocument(documentId: string, supplierId: string, lin
     const status = ocr ? ("to_verify" as const) : ("verified" as const);
     for (const p of extractPhones(text)) {
       if (phones >= MAX_CONTACTS_PER_TYPE) break;
-      const inserted = db
+      const inserted = await db
         .insert(schema.supplierContacts)
         .values({
           id: newId("cnt"),
@@ -129,11 +136,11 @@ export function contactsFromDocument(documentId: string, supplierId: string, lin
         })
         .onConflictDoNothing()
         .run();
-      phones += inserted.changes;
+      phones += inserted.rowsAffected;
     }
     for (const e of extractEmails(text)) {
       if (emails >= MAX_CONTACTS_PER_TYPE) break;
-      const inserted = db
+      const inserted = await db
         .insert(schema.supplierContacts)
         .values({
           id: newId("cnt"),
@@ -148,7 +155,7 @@ export function contactsFromDocument(documentId: string, supplierId: string, lin
         })
         .onConflictDoNothing()
         .run();
-      emails += inserted.changes;
+      emails += inserted.rowsAffected;
     }
   }
 
@@ -157,9 +164,9 @@ export function contactsFromDocument(documentId: string, supplierId: string, lin
     links,
   );
   if (website) {
-    const supplier = db.select().from(schema.suppliers).where(eq(schema.suppliers.id, supplierId)).get();
+    const supplier = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, supplierId)).get();
     if (supplier && !supplier.website) {
-      db.update(schema.suppliers).set({ website: `https://${website}`, domain: website }).where(eq(schema.suppliers.id, supplierId)).run();
+      await db.update(schema.suppliers).set({ website: `https://${website}`, domain: website }).where(eq(schema.suppliers.id, supplierId)).run();
     }
   }
   return { phones, emails, website };
@@ -173,12 +180,14 @@ export type SyncReport = {
   unindexed: string[];
   ocrNeeded: string[];
   contacts: { phones: number; emails: number };
+  /** File lasciati per la prossima esecuzione (tempo della funzione cloud quasi finito). */
+  pending?: number;
 };
 
 /** Scarica (o riusa) i PDF delle tre cartelle e li collega a proposte, venue e listino. */
 export async function syncDriveFiles(
   source: DriveSource,
-  opts: { signal?: AbortSignal; onProgress?: (done: number, total: number, name: string) => void } = {},
+  opts: { signal?: AbortSignal; onProgress?: (done: number, total: number, name: string) => void; shouldStop?: () => boolean } = {},
 ): Promise<SyncReport> {
   const db = getDb();
   const report: SyncReport = {
@@ -202,7 +211,7 @@ export async function syncDriveFiles(
   let done = 0;
   const processOne = async ({ folder, entry }: { folder: FolderKey; entry: DriveEntry }) => {
     try {
-      const already = db.select().from(schema.documents).where(eq(schema.documents.driveFileId, entry.id)).get();
+      const already = await db.select().from(schema.documents).where(eq(schema.documents.driveFileId, entry.id)).get();
       let documentId: string;
       let links: string[] = [];
       if (already) {
@@ -230,34 +239,34 @@ export async function syncDriveFiles(
       let matched = false;
       if (folder === "works") {
         const work =
-          db.select().from(schema.referenceWorks).where(eq(schema.referenceWorks.driveFileId, entry.id)).get() ??
-          db.select().from(schema.referenceWorks).where(eq(schema.referenceWorks.sourceKey, key)).get();
+          (await db.select().from(schema.referenceWorks).where(eq(schema.referenceWorks.driveFileId, entry.id)).get()) ??
+          (await db.select().from(schema.referenceWorks).where(eq(schema.referenceWorks.sourceKey, key)).get());
         if (work) {
           matched = true;
-          db.update(schema.referenceWorks).set({ documentId }).where(eq(schema.referenceWorks.id, work.id)).run();
+          await db.update(schema.referenceWorks).set({ documentId }).where(eq(schema.referenceWorks.id, work.id)).run();
         }
       } else if (folder === "location") {
         const venue =
-          db.select().from(schema.venues).where(eq(schema.venues.driveFileId, entry.id)).get() ??
-          db.select().from(schema.venues).where(eq(schema.venues.sourceKey, key)).get();
+          (await db.select().from(schema.venues).where(eq(schema.venues.driveFileId, entry.id)).get()) ??
+          (await db.select().from(schema.venues).where(eq(schema.venues.sourceKey, key)).get());
         if (venue) {
           matched = true;
           supplierId = venue.supplierId;
-          db.update(schema.venues).set({ documentId }).where(eq(schema.venues.id, venue.id)).run();
+          await db.update(schema.venues).set({ documentId }).where(eq(schema.venues.id, venue.id)).run();
         }
       } else {
         const bench =
-          db.select().from(schema.priceBenchmarks).where(eq(schema.priceBenchmarks.driveFileId, entry.id)).get() ??
-          db.select().from(schema.priceBenchmarks).where(eq(schema.priceBenchmarks.sourceKey, key)).get();
+          (await db.select().from(schema.priceBenchmarks).where(eq(schema.priceBenchmarks.driveFileId, entry.id)).get()) ??
+          (await db.select().from(schema.priceBenchmarks).where(eq(schema.priceBenchmarks.sourceKey, key)).get());
         if (bench) {
           matched = true;
           supplierId = bench.supplierId;
-          db.update(schema.priceBenchmarks).set({ documentId }).where(eq(schema.priceBenchmarks.id, bench.id)).run();
+          await db.update(schema.priceBenchmarks).set({ documentId }).where(eq(schema.priceBenchmarks.id, bench.id)).run();
         }
       }
       if (!matched) report.unindexed.push(`${entry.name} (${folder})`);
       if (supplierId) {
-        const c = contactsFromDocument(documentId, supplierId, links);
+        const c = await contactsFromDocument(documentId, supplierId, links);
         report.contacts.phones += c.phones;
         report.contacts.emails += c.emails;
       }
@@ -269,31 +278,38 @@ export async function syncDriveFiles(
     opts.onProgress?.(done, listing.length, entry.name);
   };
 
-  // 4 download in parallelo; le scritture sul database restano sincrone
+  // 4 download in parallelo
   const queue = [...listing];
   await Promise.all(
     Array.from({ length: 4 }, async () => {
-      for (let item = queue.shift(); item; item = queue.shift()) await processOne(item);
+      for (let item = queue.shift(); item; item = queue.shift()) {
+        if (opts.shouldStop?.()) {
+          queue.unshift(item);
+          return;
+        }
+        await processOne(item);
+      }
     }),
   );
+  if (queue.length) report.pending = queue.length;
   return report;
 }
 
 /** Rifà l'estrazione dei contatti dai PDF già archiviati (dopo un miglioramento delle regole). */
-export function reextractPdfContacts() {
+export async function reextractPdfContacts() {
   const db = getDb();
-  db.delete(schema.supplierContacts).where(eq(schema.supplierContacts.verificationMethod, "pdf_text")).run();
+  await db.delete(schema.supplierContacts).where(eq(schema.supplierContacts.verificationMethod, "pdf_text")).run();
   const linked = [
-    ...db.select({ documentId: schema.venues.documentId, supplierId: schema.venues.supplierId }).from(schema.venues).all(),
-    ...db
+    ...(await db.select({ documentId: schema.venues.documentId, supplierId: schema.venues.supplierId }).from(schema.venues).all()),
+    ...(await db
       .select({ documentId: schema.priceBenchmarks.documentId, supplierId: schema.priceBenchmarks.supplierId })
       .from(schema.priceBenchmarks)
-      .all(),
+      .all()),
   ];
   const totals = { phones: 0, emails: 0, documents: 0 };
   for (const { documentId, supplierId } of linked) {
     if (!documentId || !supplierId) continue;
-    const r = contactsFromDocument(documentId, supplierId);
+    const r = await contactsFromDocument(documentId, supplierId);
     totals.phones += r.phones;
     totals.emails += r.emails;
     totals.documents++;

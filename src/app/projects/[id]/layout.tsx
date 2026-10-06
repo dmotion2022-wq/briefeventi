@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { count, eq, type SQL } from "drizzle-orm";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
+import { requireUser } from "@/auth/session";
 import { getDb, schema } from "@/db/client";
 import { getProject } from "@/db/queries/projects";
 import { activeRuns } from "@/worker/runs";
@@ -29,28 +30,33 @@ const TASK_LABELS: Record<string, string> = {
   "export.html": "Pagina web",
 };
 
-function completedSteps(projectId: string) {
+async function completedSteps(projectId: string) {
   const db = getDb();
   const done: string[] = [];
-  const brief = latestBrief(projectId);
+  const brief = await latestBrief(projectId);
   if (brief?.status === "confirmed") done.push("brief");
   if (brief?.analysis) done.push("gaps");
-  const n = (t: SQLiteTable, where: SQL) => db.select({ n: count() }).from(t).where(where).get()?.n ?? 0;
-  if (n(schema.concepts, eq(schema.concepts.projectId, projectId)) > 0) done.push("concepts");
-  if (n(schema.agendaSlots, eq(schema.agendaSlots.projectId, projectId)) > 0) done.push("agenda");
-  if (n(schema.modules, eq(schema.modules.projectId, projectId)) > 0) done.push("develop");
-  if (n(schema.imageAssets, eq(schema.imageAssets.projectId, projectId)) > 0) done.push("images");
-  if (n(schema.quotes, eq(schema.quotes.projectId, projectId)) > 0) done.push("quote");
-  if (n(schema.supplierLinks, eq(schema.supplierLinks.projectId, projectId)) > 0) done.push("suppliers");
-  if (n(schema.exportsTable, eq(schema.exportsTable.projectId, projectId)) > 0) done.push("exports");
+  const n = async (t: SQLiteTable, where: SQL) => (await db.select({ n: count() }).from(t).where(where).get())?.n ?? 0;
+  const steps: [string, SQLiteTable, SQL][] = [
+    ["concepts", schema.concepts, eq(schema.concepts.projectId, projectId)],
+    ["agenda", schema.agendaSlots, eq(schema.agendaSlots.projectId, projectId)],
+    ["develop", schema.modules, eq(schema.modules.projectId, projectId)],
+    ["images", schema.imageAssets, eq(schema.imageAssets.projectId, projectId)],
+    ["quote", schema.quotes, eq(schema.quotes.projectId, projectId)],
+    ["suppliers", schema.supplierLinks, eq(schema.supplierLinks.projectId, projectId)],
+    ["exports", schema.exportsTable, eq(schema.exportsTable.projectId, projectId)],
+  ];
+  const counts = await Promise.all(steps.map(([, table, where]) => n(table, where)));
+  steps.forEach(([key], i) => counts[i] > 0 && done.push(key));
   return done;
 }
 
 export default async function ProjectLayout(props: LayoutProps<"/projects/[id]">) {
+  await requireUser();
   const { id } = await props.params;
-  const project = getProject(id);
+  const project = await getProject(id);
   if (!project) notFound();
-  const runs = activeRuns(id);
+  const [runs, done] = await Promise.all([activeRuns(id), completedSteps(id)]);
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -93,7 +99,7 @@ export default async function ProjectLayout(props: LayoutProps<"/projects/[id]">
           ))}
         </div>
       )}
-      <StepNav projectId={id} done={completedSteps(id)} />
+      <StepNav projectId={id} done={done} />
       {props.children}
     </div>
   );

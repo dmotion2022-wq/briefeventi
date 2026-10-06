@@ -443,6 +443,55 @@ export const priceBenchmarks = sqliteTable("price_benchmarks", {
   createdAt: createdAt(),
 });
 
+// ── Piattaforme per trovare fornitori ────────────────────────────────────────
+
+export const PLATFORM_TYPES = [
+  "marketplace",
+  "directory",
+  "associazione",
+  "convention_bureau",
+  "software",
+  "portale_ufficiale",
+  "fornitore_nazionale",
+] as const;
+export const PLATFORM_STATUSES = ["in_uso", "da_valutare", "scartata"] as const;
+
+// Marketplace, elenchi, associazioni e portali da cui partire per cercare fornitori nuovi,
+// con i contatti pubblici della piattaforma stessa (presi dal suo sito, con la pagina come fonte).
+export const platforms = sqliteTable(
+  "platforms",
+  {
+    id: text("id").primaryKey(),
+    // chiave delle piattaforme fornite con l'app: i nuovi rilasci aggiungono senza toccare le modifiche
+    seedKey: text("seed_key").unique(),
+    name: text("name").notNull(),
+    url: text("url").notNull(),
+    domain: text("domain"),
+    // chiavi della checklist (location, catering, …) più "dmc" e "generale"
+    categories: text("categories", { mode: "json" }).notNull().$type<string[]>(),
+    type: text("type", { enum: PLATFORM_TYPES }).notNull(),
+    description: text("description"),
+    howToUse: text("how_to_use"),
+    coverage: text("coverage"),
+    organizerCost: text("organizer_cost"),
+    email: text("email"),
+    emailSource: text("email_source"),
+    phone: text("phone"),
+    phoneDisplay: text("phone_display"),
+    phoneSource: text("phone_source"),
+    contactPage: text("contact_page"),
+    // URL di ricerca con {q} e {city}, se la piattaforma lo permette
+    searchUrl: text("search_url"),
+    notes: text("notes"),
+    status: text("status", { enum: PLATFORM_STATUSES }).notNull().default("da_valutare"),
+    source: text("source", { enum: ["research", "manual"] }).notNull().default("manual"),
+    verifiedAt: text("verified_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("platforms_status_idx").on(t.status)],
+);
+
 // ── Fornitori e contatti ─────────────────────────────────────────────────────
 
 export const suppliers = sqliteTable(
@@ -460,7 +509,9 @@ export const suppliers = sqliteTable(
     domain: text("domain"),
     notes: text("notes"),
     rating: integer("rating"),
-    source: text("source", { enum: ["sheet", "pdf", "web_search", "manual"] }).notNull(),
+    source: text("source", { enum: ["sheet", "pdf", "web_search", "platform", "manual"] }).notNull(),
+    // piattaforma su cui è stato trovato (se trovato lì)
+    platformId: text("platform_id").references(() => platforms.id, { onDelete: "set null" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -687,6 +738,8 @@ export const aiRuns = sqliteTable(
     // costo stimato in micro-euro (1 € = 1.000.000)
     costMicros: integer("cost_micros").notNull().default(0),
     cancelRequested: flag("cancel_requested"),
+    // in cloud: gettone monouso con cui la funzione che esegue il lavoro lo prende in carico
+    dispatchToken: text("dispatch_token"),
     heartbeatAt: text("heartbeat_at"),
     startedAt: text("started_at"),
     finishedAt: text("finished_at"),
@@ -728,3 +781,39 @@ export const counters = sqliteTable("counters", {
   key: text("key").primaryKey(),
   value: integer("value").notNull().default(0),
 });
+
+// ── Utenti e accessi (solo nella versione online) ────────────────────────────
+
+export const USER_ROLES = ["admin", "member"] as const;
+
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  // sempre in minuscolo
+  email: text("email").notNull().unique(),
+  name: text("name").notNull(),
+  role: text("role", { enum: USER_ROLES }).notNull().default("member"),
+  passwordHash: text("password_hash").notNull(),
+  mustChangePassword: flag("must_change_password"),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  failedLogins: integer("failed_logins").notNull().default(0),
+  lockedUntil: text("locked_until"),
+  lastLoginAt: text("last_login_at"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    // hash SHA-256 del gettone nel cookie: chi legge il database non può riusare le sessioni
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    expiresAt: text("expires_at").notNull(),
+    lastSeenAt: text("last_seen_at").notNull(),
+    userAgent: text("user_agent"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("sessions_user_idx").on(t.userId)],
+);

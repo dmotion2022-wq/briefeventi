@@ -1,10 +1,23 @@
 import { NextResponse } from "next/server";
-import { getRun, requestCancel } from "@/worker/runs";
+import { requireUser } from "@/auth/session";
+import { dispatchRun, usesDispatch } from "@/worker/dispatch";
+import { getRun, reapStaleRuns, requestCancel } from "@/worker/runs";
+
+// Un avvio perso (rete, nuova versione del sito) non deve lasciare il lavoro in coda per sempre.
+const REDISPATCH_AFTER_MS = 20_000;
 
 export async function GET(_req: Request, ctx: RouteContext<"/api/runs/[id]">) {
+  await requireUser();
   const { id } = await ctx.params;
-  const run = getRun(id);
+  await reapStaleRuns();
+  let run = await getRun(id);
   if (!run) return NextResponse.json({ error: "Lavoro non trovato" }, { status: 404 });
+  // per un lavoro che continua conta l'ultima volta che è stato rimesso in coda
+  const queuedSince = Date.parse(run.heartbeatAt ?? run.createdAt);
+  if (usesDispatch() && run.status === "queued" && Date.now() - queuedSince > REDISPATCH_AFTER_MS) {
+    await dispatchRun(id);
+    run = (await getRun(id)) ?? run;
+  }
   return NextResponse.json({
     id: run.id,
     task: run.task,
@@ -18,11 +31,13 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/runs/[id]">) {
     startedAt: run.startedAt,
     heartbeatAt: run.heartbeatAt,
     now: new Date().toISOString(),
+    mode: usesDispatch() ? "cloud" : "worker",
   });
 }
 
 export async function DELETE(_req: Request, ctx: RouteContext<"/api/runs/[id]">) {
+  await requireUser();
   const { id } = await ctx.params;
-  requestCancel(id);
+  await requestCancel(id);
   return NextResponse.json({ ok: true });
 }

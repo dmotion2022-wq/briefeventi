@@ -65,7 +65,7 @@ async function bibleFontFaces(families: string[]) {
   return css.join("\n");
 }
 
-async function imageData(file: string | null, width: number) {
+async function imageData(file: Buffer | null, width: number) {
   if (!file) return null;
   const buf = await sharp(file).resize({ width, withoutEnlargement: true }).jpeg({ quality: 78, mozjpeg: true }).toBuffer();
   return `data:image/jpeg;base64,${buf.toString("base64")}`;
@@ -77,7 +77,7 @@ const SLOT_LABELS: Record<string, string> = {
 };
 
 export async function buildProposalHtml(projectId: string, opts: { prices: boolean }) {
-  const d = loadProposal(projectId);
+  const d = await loadProposal(projectId);
   const c = eventColors(d);
   const title = d.bible?.name ?? d.concept?.name ?? d.project.title;
   const claim = d.bible?.claim ?? d.concept?.claim ?? "";
@@ -87,8 +87,8 @@ export async function buildProposalHtml(projectId: string, opts: { prices: boole
   const hasDisplay = !!displayFont && extraFonts.includes(displayFont);
   const hasText = !!textFont && extraFonts.includes(textFont);
 
-  const hero = await imageData(d.imagePath(d.keyVisual), 2000);
-  const gallery = (await Promise.all(d.moodboard.map((img) => imageData(d.imagePath(img), 1400)))).filter((x): x is string => !!x);
+  const hero = await imageData(d.image(d.keyVisual), 2000);
+  const gallery = (await Promise.all(d.moodboard.map((img) => imageData(d.image(img), 1400)))).filter((x): x is string => !!x);
 
   const days = [...new Set(d.slots.map((s) => s.day))].sort((a, b) => a - b);
   const nav: [string, string][] = [];

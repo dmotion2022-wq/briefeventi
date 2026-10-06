@@ -9,23 +9,28 @@ import { apiKeyAction, type KeyState } from "@/server/settings";
 
 const idle: KeyState = { status: "idle", message: "" };
 
-export function ApiKeyForm({ present, masked }: { present: boolean; masked: string }) {
+/** Sul Mac si incolla e si verifica; online (editable = false) la chiave sta su Vercel e qui si verifica soltanto. */
+export function ApiKeyForm({ present, masked, editable = true }: { present: boolean; masked: string; editable?: boolean }) {
   const [state, action, pending] = useActionState(apiKeyAction, idle);
   return (
     <form action={action} className="flex flex-col gap-3">
-      <Field
-        label={present ? `Chiave attuale: ${masked}. Incollane una nuova per sostituirla` : "Incolla qui la chiave (API key)"}
-        hint="Resta solo su questo Mac, nel file .env.local. Vale subito, senza riavviare."
-      >
-        <Input name="apiKey" type="password" autoComplete="off" spellCheck={false} placeholder="sk-…" className="font-mono text-[13px]" />
-      </Field>
+      {editable && (
+        <Field
+          label={present ? `Chiave attuale: ${masked}. Incollane una nuova per sostituirla` : "Incolla qui la chiave (API key)"}
+          hint="Resta solo su questo Mac, nel file .env.local. Vale subito, senza riavviare."
+        >
+          <Input name="apiKey" type="password" autoComplete="off" spellCheck={false} placeholder="sk-…" className="font-mono text-[13px]" />
+        </Field>
+      )}
       <div className="flex flex-wrap items-center gap-2">
-        <Button name="intent" value="save" disabled={pending}>
-          Salva e verifica
-        </Button>
+        {editable && (
+          <Button name="intent" value="save" disabled={pending}>
+            Salva e verifica
+          </Button>
+        )}
         {present && (
-          <Button name="intent" value="verify" variant="secondary" disabled={pending}>
-            Verifica quella salvata
+          <Button name="intent" value="verify" variant={editable ? "secondary" : "primary"} disabled={pending}>
+            {editable ? "Verifica quella salvata" : "Verifica la chiave"}
           </Button>
         )}
         {pending && (

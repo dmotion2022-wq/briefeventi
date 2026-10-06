@@ -12,31 +12,33 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { PROJECT_STATUS, SECTOR_LABELS, formatDate } from "@/lib/labels";
 import { formatCents } from "@/lib/money";
+import { requireUser } from "@/auth/session";
 
-function archiveStats() {
+async function archiveStats() {
   const db = getDb();
-  const n = (t: SQLiteTable) => db.select({ n: count() }).from(t).get()?.n ?? 0;
+  const n = async (t: SQLiteTable) => (await db.select({ n: count() }).from(t).get())?.n ?? 0;
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
-  const cost =
+  const [suppliers, venues, works, benchmarks, platforms, costRow] = await Promise.all([
+    n(schema.suppliers),
+    n(schema.venues),
+    n(schema.referenceWorks),
+    n(schema.priceBenchmarks),
+    n(schema.platforms),
     db
       .select({ c: sql<number>`coalesce(sum(${schema.aiCalls.costMicros}), 0)` })
       .from(schema.aiCalls)
       .where(sql`${schema.aiCalls.createdAt} >= ${monthStart.toISOString()}`)
-      .get()?.c ?? 0;
-  return {
-    suppliers: n(schema.suppliers),
-    venues: n(schema.venues),
-    works: n(schema.referenceWorks),
-    benchmarks: n(schema.priceBenchmarks),
-    aiCostMonthCents: Math.round(cost / 10_000),
-  };
+      .get(),
+  ]);
+  return { suppliers, venues, works, benchmarks, platforms, aiCostMonthCents: Math.round((costRow?.c ?? 0) / 10_000) };
 }
 
-export default function HomePage() {
-  const projects = listProjects();
-  const stats = archiveStats();
+export default async function HomePage() {
+  const user = await requireUser();
+  const online = !!process.env.VERCEL;
+  const [projects, stats] = await Promise.all([listProjects(), archiveStats()]);
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -60,13 +62,16 @@ export default function HomePage() {
             <strong className="font-semibold">Manca la chiave Qwen.</strong> Finché non c&apos;è, le funzioni AI (analisi del brief, concept,
             moduli, immagini) restano spente; archivio, preventivo ed export funzionano già.
           </span>
-          <span className="shrink-0 font-medium text-violet">Incollala in Impostazioni →</span>
+          <span className="shrink-0 font-medium text-violet">
+            {online ? (user.role === "admin" ? "Va impostata su Vercel: istruzioni →" : "Avvisa l'amministratore") : "Incollala in Impostazioni →"}
+          </span>
         </Link>
       )}
 
-      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-5">
+      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
         {[
           { label: "Fornitori", value: stats.suppliers, href: "/library/suppliers" },
+          { label: "Piattaforme", value: stats.platforms, href: "/library/platforms" },
           { label: "Location e hotel", value: stats.venues, href: "/library/venues" },
           { label: "Proposte passate", value: stats.works, href: "/library/works" },
           { label: "Voci di listino", value: stats.benchmarks, href: "/library/benchmarks" },

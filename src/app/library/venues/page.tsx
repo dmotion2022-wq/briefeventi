@@ -8,13 +8,15 @@ import { DocLink } from "@/components/doc-link";
 import { Input } from "@/components/ui/field";
 import { PageHeader } from "@/components/ui/page-header";
 import { Table, Td, Th, THead, Tr } from "@/components/ui/table";
+import { requireUser } from "@/auth/session";
 
 export const metadata = { title: "Location e hotel" };
 
 export default async function VenuesPage(props: PageProps<"/library/venues">) {
   const sp = await props.searchParams;
   const q = typeof sp.q === "string" ? sp.q : "";
-  const venues = listVenues({ q });
+  await requireUser();
+  const venues = await listVenues({ q });
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader

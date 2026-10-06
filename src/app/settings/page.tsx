@@ -1,5 +1,7 @@
+import Link from "next/link";
 import { asc } from "drizzle-orm";
 import { apiKeyStatus } from "@/ai/qwen";
+import { authEnabled, requireUser } from "@/auth/session";
 import { getDb, schema } from "@/db/client";
 import { getSetting } from "@/lib/settings";
 import { MODEL_TIERS } from "@/lib/settings-defaults";
@@ -9,6 +11,8 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Field, Input, Textarea } from "@/components/ui/field";
 import { PageHeader } from "@/components/ui/page-header";
 import { ApiKeyForm } from "@/components/settings/api-key-form";
+import { DriveSourceForm } from "@/components/settings/drive-source-form";
+import { EmptyState } from "@/components/ui/empty-state";
 import { SubmitButton } from "@/components/submit-button";
 import { SECTOR_LABELS } from "@/lib/labels";
 
@@ -23,24 +27,45 @@ const TIER_LABELS: Record<string, string> = {
   image: "Varianti di immagine e moodboard",
 };
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const user = await requireUser();
+  if (user.role !== "admin") {
+    return <EmptyState title="Solo per amministratori">Le impostazioni (modelli, prezzi, agenzia, IVA, Drive) le modifica chi amministra Event Studio.</EmptyState>;
+  }
+  const online = !!process.env.VERCEL;
   const key = apiKeyStatus();
-  const agency = getSetting("agency");
-  const models = getSetting("ai.models");
-  const prices = getSetting("ai.prices");
-  const thinking = getSetting("ai.thinking");
-  const fx = getSetting("ai.usdToEur");
-  const quote = getSetting("quote.defaults");
-  const cliches = getSetting("creative.cliches");
-  const sectors = getSetting("compliance.sectors");
-  const drive = getSetting("drive.source");
-  const regimes = getDb().select().from(schema.vatRegimes).orderBy(asc(schema.vatRegimes.position)).all();
+  const [agency, models, prices, thinking, fx, quote, cliches, sectors, drive, regimes] = await Promise.all([
+    getSetting("agency"),
+    getSetting("ai.models"),
+    getSetting("ai.prices"),
+    getSetting("ai.thinking"),
+    getSetting("ai.usdToEur"),
+    getSetting("quote.defaults"),
+    getSetting("creative.cliches"),
+    getSetting("compliance.sectors"),
+    getSetting("drive.source"),
+    getDb().select().from(schema.vatRegimes).orderBy(asc(schema.vatRegimes.position)).all(),
+  ]);
   const modelIds = [...new Set(Object.values(models))];
 
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader eyebrow="Sistema" title="Impostazioni" />
       <div className="flex flex-col gap-5">
+        {authEnabled() && (
+          <Card>
+            <CardHeader
+              title="Utenti e accessi"
+              description="Chi può entrare in Event Studio online: crei tu gli accessi e decidi chi è amministratore."
+              actions={
+                <Link href="/settings/users" className="text-[13px] text-violet hover:underline">
+                  Gestisci gli utenti →
+                </Link>
+              }
+            />
+          </Card>
+        )}
+
         <Card>
           <CardHeader
             title="Chiave Qwen (Alibaba Model Studio)"
@@ -48,12 +73,30 @@ export default function SettingsPage() {
             actions={key.present ? <Badge tone="ok">chiave presente · {key.masked}</Badge> : <Badge tone="warn">chiave mancante</Badge>}
           />
           <CardBody>
-            <ApiKeyForm present={key.present} masked={key.masked} />
-            {key.source === "env" && (
+            <ApiKeyForm present={key.present} masked={key.masked} editable={!online} />
+            {online ? (
               <p className="mt-3 text-xs text-n500">
-                La chiave in uso arriva da una variabile d&apos;ambiente del Terminale: quella che salvi qui ha la precedenza.
+                Online la chiave non si incolla qui: si imposta nel progetto su Vercel (Settings → Environment Variables → DASHSCOPE_API_KEY),
+                così non passa mai dal codice pubblico.
               </p>
+            ) : (
+              key.source === "env" && (
+                <p className="mt-3 text-xs text-n500">
+                  La chiave in uso arriva da una variabile d&apos;ambiente del Terminale: quella che salvi qui ha la precedenza.
+                </p>
+              )
             )}
+          </CardBody>
+        </Card>
+
+        <Card id="drive">
+          <CardHeader
+            title="Archivio Drive"
+            description="La cartella con proposte passate, location e preventivi dei fornitori da cui l'Archivio importa. Il link non è nel codice: si imposta qui."
+            actions={drive.sheetId ? <Badge tone="ok">collegata</Badge> : <Badge tone="warn">da collegare</Badge>}
+          />
+          <CardBody>
+            <DriveSourceForm folderUrl={drive.folderUrl} localPath={drive.localPath} showLocalPath={!online} />
           </CardBody>
         </Card>
 
@@ -201,7 +244,7 @@ export default function SettingsPage() {
         </Card>
 
         <Card>
-          <CardHeader title="Creatività, compliance e Drive" />
+          <CardHeader title="Creatività e compliance" />
           <CardBody>
             <form action={saveListsAction} className="flex flex-col gap-4">
               <Field label="Cliché da evitare (uno per riga): i concept li ricevono come vincolo">
@@ -214,12 +257,6 @@ export default function SettingsPage() {
                   </Field>
                 ))}
               </div>
-              <Field
-                label="Cartella MVP SUPPLIERS sincronizzata sul Mac (facoltativa)"
-                hint="Se la imposti, i PDF si leggono da qui invece che dal link pubblico. Es. ~/Library/CloudStorage/GoogleDrive-…/Il mio Drive/MVP SUPPLIERS"
-              >
-                <Input name="driveLocalPath" defaultValue={drive.localPath} />
-              </Field>
               <div className="flex justify-end">
                 <SubmitButton variant="secondary">Salva</SubmitButton>
               </div>

@@ -23,16 +23,16 @@ const KIND_BY_CATEGORY: Record<string, string[]> = {
 
 type ModuleCandidates = { candidates?: { venueId: string | null }[] };
 
-export function proposeArchiveSuppliers(projectId: string, quoteId: string) {
+export async function proposeArchiveSuppliers(projectId: string, quoteId: string) {
   const db = getDb();
-  const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+  const project = await db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
   if (!project) return 0;
-  const lines = db.select().from(schema.quoteLines).where(eq(schema.quoteLines.quoteId, quoteId)).all();
+  const lines = await db.select().from(schema.quoteLines).where(eq(schema.quoteLines.quoteId, quoteId)).all();
   const componentIds = lines.map((l) => l.componentId).filter((x): x is string => !!x);
   const components = new Map(
-    (componentIds.length ? db.select().from(schema.components).where(inArray(schema.components.id, componentIds)).all() : []).map((c) => [c.id, c]),
+    (componentIds.length ? await db.select().from(schema.components).where(inArray(schema.components.id, componentIds)).all() : []).map((c) => [c.id, c]),
   );
-  const suppliers = db
+  const suppliers = await db
     .select({
       supplier: schema.suppliers,
       verified: sql<number>`(select count(*) from supplier_contacts c where c.supplier_id = "suppliers"."id" and c.status = 'verified' and c.type in ('phone','mobile'))`,
@@ -41,14 +41,14 @@ export function proposeArchiveSuppliers(projectId: string, quoteId: string) {
     .all();
 
   // location e hotel suggeriti dai moduli
-  const modules = db.select().from(schema.modules).where(eq(schema.modules.projectId, projectId)).all();
+  const modules = await db.select().from(schema.modules).where(eq(schema.modules.projectId, projectId)).all();
   const suggestedVenueIds = new Set(
     modules
       .filter((m) => m.kind === "venue" || m.kind === "accommodation")
       .flatMap((m) => ((m.data as ModuleCandidates).candidates ?? []).map((c) => c.venueId).filter((x): x is string => !!x)),
   );
   const suggestedSupplierIds = new Set(
-    (suggestedVenueIds.size ? db.select().from(schema.venues).where(inArray(schema.venues.id, [...suggestedVenueIds])).all() : [])
+    (suggestedVenueIds.size ? await db.select().from(schema.venues).where(inArray(schema.venues.id, [...suggestedVenueIds])).all() : [])
       .map((v) => v.supplierId)
       .filter((x): x is string => !!x),
   );
@@ -56,12 +56,13 @@ export function proposeArchiveSuppliers(projectId: string, quoteId: string) {
   const city = project.city?.toLowerCase();
   const region = project.region?.toLowerCase();
   const existing = new Set(
-    db
-      .select({ l: schema.supplierLinks.quoteLineId, s: schema.supplierLinks.supplierId })
-      .from(schema.supplierLinks)
-      .where(eq(schema.supplierLinks.projectId, projectId))
-      .all()
-      .map((x) => `${x.l}|${x.s}`),
+    (
+      await db
+        .select({ l: schema.supplierLinks.quoteLineId, s: schema.supplierLinks.supplierId })
+        .from(schema.supplierLinks)
+        .where(eq(schema.supplierLinks.projectId, projectId))
+        .all()
+    ).map((x) => `${x.l}|${x.s}`),
   );
 
   let created = 0;
@@ -86,7 +87,8 @@ export function proposeArchiveSuppliers(projectId: string, quoteId: string) {
       .slice(0, 3);
     for (const { supplier } of ranked) {
       if (existing.has(`${line.id}|${supplier.id}`)) continue;
-      db.insert(schema.supplierLinks)
+      await db
+        .insert(schema.supplierLinks)
         .values({ id: newId("lnk"), projectId, quoteLineId: line.id, componentId: line.componentId, category, supplierId: supplier.id, status: "to_contact" })
         .run();
       existing.add(`${line.id}|${supplier.id}`);

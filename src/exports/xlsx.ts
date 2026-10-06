@@ -15,11 +15,12 @@ const font = (opts: Partial<ExcelJS.Font> = {}): Partial<ExcelJS.Font> => ({ nam
 const euros = (cents: number) => Math.round(cents) / 100;
 
 export async function buildQuoteXlsx(quoteId: string, variant: "client" | "internal") {
-  const data = computeForQuote(quoteId);
+  const data = await computeForQuote(quoteId);
   if (!data) throw new Error("Preventivo non trovato");
   const { quote, sections, lines, totals, regimes } = data;
-  const project = getDb().select().from(schema.projects).where(eq(schema.projects.id, quote.projectId)).get()!;
-  const agency = getSetting("agency");
+  const project = await getDb().select().from(schema.projects).where(eq(schema.projects.id, quote.projectId)).get();
+  if (!project) throw new Error("Progetto non trovato");
+  const agency = await getSetting("agency");
   const result = new Map(totals.lines.map((l) => [l.id, l]));
   const regimeByCode = new Map(regimes.map((r) => [r.code, r]));
 
@@ -312,7 +313,7 @@ export async function buildQuoteXlsx(quoteId: string, variant: "client" | "inter
       wi.getRow(r2).font = font({ bold: label === "Margine previsto" });
     });
 
-    const links = getDb()
+    const links = await getDb()
       .select({ link: schema.supplierLinks, supplier: schema.suppliers })
       .from(schema.supplierLinks)
       .innerJoin(schema.suppliers, eq(schema.suppliers.id, schema.supplierLinks.supplierId))

@@ -3,11 +3,13 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardBody } from "@/components/ui/card";
 import { DocLink } from "@/components/doc-link";
 import { PageHeader } from "@/components/ui/page-header";
+import { requireUser } from "@/auth/session";
 
 export const metadata = { title: "Proposte passate" };
 
-export default function WorksPage() {
-  const works = listWorks();
+export default async function WorksPage() {
+  await requireUser();
+  const works = await listWorks();
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader

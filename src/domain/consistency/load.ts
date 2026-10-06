@@ -5,15 +5,18 @@ import { computeForQuote, currentQuote } from "@/db/queries/quotes";
 import { checkConsistency, type ConsistencyInput } from "./rules";
 
 /** Raccoglie dal database tutto ciò che serve al controllo di coerenza di un progetto. */
-export function consistencyFor(projectId: string) {
+export async function consistencyFor(projectId: string) {
   const db = getDb();
-  const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+  const project = await db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
   if (!project) return null;
-  const slots = agendaSlotsOf(projectId);
-  const modules = new Map<string, unknown>(db.select().from(schema.modules).where(eq(schema.modules.projectId, projectId)).all().map((m) => [m.kind, m.data]));
-  const components = db.select().from(schema.components).where(eq(schema.components.projectId, projectId)).all();
-  const quote = currentQuote(projectId);
-  const computed = quote ? computeForQuote(quote.id) : null;
+  const slots = await agendaSlotsOf(projectId);
+  const modules = new Map<string, unknown>(
+    (await db.select().from(schema.modules).where(eq(schema.modules.projectId, projectId)).all()).map((m) => [m.kind, m.data]),
+  );
+  const components = await db.select().from(schema.components).where(eq(schema.components.projectId, projectId)).all();
+  const quote = await currentQuote(projectId);
+  const computed = quote ? await computeForQuote(quote.id) : null;
+  const brief = await latestBrief(projectId);
   const estimate = components.reduce(
     (acc, c) => {
       const e = (c.specs as { estimate?: { minCents: number; maxCents: number } } | null)?.estimate;
@@ -38,7 +41,7 @@ export function consistencyFor(projectId: string) {
     endDate: project.endDate,
     paxTarget: project.paxTarget,
     budgetCents: project.budgetCents,
-    budgetIncludesVat: (latestBrief(projectId)?.data as { budget?: { vatIncluded?: boolean | null } } | undefined)?.budget?.vatIncluded ?? false,
+    budgetIncludesVat: (brief?.data as { budget?: { vatIncluded?: boolean | null } } | undefined)?.budget?.vatIncluded ?? false,
     slots: slots.map((s) => ({ id: s.id, day: s.day, date: s.date, kind: s.kind, title: s.title, startTime: s.startTime })),
     components: components.map((c) => ({ id: c.id, category: c.category, title: c.title, slotIds: c.slotIds, quantityHint: c.quantityHint, optional: c.optional })),
     catering: modules.get("catering") as ConsistencyInput["catering"],

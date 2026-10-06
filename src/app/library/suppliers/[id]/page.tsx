@@ -17,13 +17,15 @@ import {
   formatDate,
 } from "@/lib/labels";
 import { formatCents } from "@/lib/money";
+import { requireUser } from "@/auth/session";
 
 export default async function SupplierPage(props: PageProps<"/library/suppliers/[id]">) {
+  await requireUser();
   const { id } = await props.params;
-  const detail = getSupplierDetail(id);
+  const detail = await getSupplierDetail(id);
   if (!detail) notFound();
-  const { supplier: s, contacts, venues, benchmarks, links } = detail;
-  const docs = documentsByIds([
+  const { supplier: s, contacts, venues, benchmarks, links, platform } = detail;
+  const docs = await documentsByIds([
     ...contacts.map((c) => c.evidence?.documentId ?? null),
     ...venues.map((v) => v.documentId),
     ...benchmarks.map((b) => b.documentId),
@@ -38,7 +40,19 @@ export default async function SupplierPage(props: PageProps<"/library/suppliers/
           </Link>
         }
         title={s.name}
-        description={[SUPPLIER_KIND_LABELS[s.kind], s.city, s.region].filter(Boolean).join(" · ")}
+        description={
+          <>
+            {[SUPPLIER_KIND_LABELS[s.kind], s.city, s.region].filter(Boolean).join(" · ")}
+            {platform && (
+              <>
+                {" · trovato su "}
+                <Link href={`/library/platforms?q=${encodeURIComponent(platform.name)}`} className="text-violet hover:underline">
+                  {platform.name}
+                </Link>
+              </>
+            )}
+          </>
+        }
         actions={
           s.website && (
             <a href={s.website} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-violet hover:underline">

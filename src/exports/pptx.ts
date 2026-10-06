@@ -26,8 +26,11 @@ const SLOT_LABELS: Record<string, string> = {
   other: "",
 };
 
+/** Immagine per pptxgenjs: incorporata come base64 (i file possono stare nel cloud). */
+const pngData = (buffer: Buffer | null) => (buffer ? `image/png;base64,${buffer.toString("base64")}` : null);
+
 export async function buildProposalPptx(projectId: string, opts: { prices: boolean; safeFonts: boolean }) {
-  const d = loadProposal(projectId);
+  const d = await loadProposal(projectId);
   const c = eventColors(d);
   const fonts: Fonts = opts.safeFonts
     ? { head: brand.fonts.safeSans, body: brand.fonts.safeSans, mono: brand.fonts.safeMono }
@@ -74,9 +77,9 @@ export async function buildProposalPptx(projectId: string, opts: { prices: boole
     n++;
     const slide = pptx.addSlide();
     slide.background = { color: c.dark };
-    const kv = d.imagePath(d.keyVisual);
+    const kv = pngData(d.image(d.keyVisual));
     if (kv) {
-      slide.addImage({ path: kv, x: 0, y: 0, w: W, h: H, sizing: { type: "cover", w: W, h: H } });
+      slide.addImage({ data: kv, x: 0, y: 0, w: W, h: H, sizing: { type: "cover", w: W, h: H } });
       slide.addShape("rect", { x: 0, y: 0, w: W, h: H, fill: { color: "000000", transparency: 45 }, line: { type: "none" } });
     }
     slide.addText(`${d.project.clientName.toUpperCase()} · ${(d.project.eventType ?? "evento").toUpperCase()}`, {
@@ -142,15 +145,15 @@ export async function buildProposalPptx(projectId: string, opts: { prices: boole
   const wow = d.bible?.wowMoment ?? d.concept?.wowMoment;
   if (wow) {
     const { slide } = add({ dark: true, eyebrow: `Il momento wow · ${wow.when}`, notes: d.concept?.wowMoment.feasibility ? `Fattibilità: ${d.concept.wowMoment.feasibility}` : undefined });
-    const img = d.imagePath(d.moodboard[0]);
+    const img = pngData(d.image(d.moodboard[0]));
     const textW = img ? 6.3 : W - 2 * M;
     slide.addText(wow.title, { x: M, y: 1.0, w: textW, h: 1.6, fontFace: fonts.head, fontSize: 36, bold: true, color: "FFFFFF", valign: "top" });
     slide.addText(wow.description, { x: M, y: 2.8, w: textW, h: 3.4, fontFace: fonts.body, fontSize: 16, color: "EDEAE3", valign: "top" });
-    if (img) slide.addImage({ path: img, x: 7.3, y: 0.9, w: 5.4, h: 5.6, sizing: { type: "cover", w: 5.4, h: 5.6 } });
+    if (img) slide.addImage({ data: img, x: 7.3, y: 0.9, w: 5.4, h: 5.6, sizing: { type: "cover", w: 5.4, h: 5.6 } });
   }
 
   // 7. Key visual e moodboard
-  const mood = [d.keyVisual, ...d.moodboard].map((i) => d.imagePath(i)).filter((p): p is string => !!p).slice(0, 6);
+  const mood = [d.keyVisual, ...d.moodboard].map((i) => pngData(d.image(i))).filter((p): p is string => !!p).slice(0, 6);
   if (mood.length) {
     const { slide } = add({ eyebrow: "Atmosfera", heading: "Key visual e moodboard" });
     const cols = mood.length > 3 ? 3 : mood.length;
@@ -160,7 +163,7 @@ export async function buildProposalPptx(projectId: string, opts: { prices: boole
     mood.forEach((p, i) => {
       const x = M + (i % cols) * (gw + 0.2);
       const y = 1.9 + Math.floor(i / cols) * (gh + 0.2);
-      slide.addImage({ path: p, x, y, w: gw, h: gh, sizing: { type: "cover", w: gw, h: gh } });
+      slide.addImage({ data: p, x, y, w: gw, h: gh, sizing: { type: "cover", w: gw, h: gh } });
     });
   }
 

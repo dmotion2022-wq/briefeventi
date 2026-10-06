@@ -7,7 +7,7 @@ import { rfqDraft, supplierSearch } from "./jobs/suppliers";
 import { imagesGenerate } from "./jobs/images";
 import { documentsOcr } from "./jobs/ocr";
 import { libraryExtract } from "./jobs/library-extract";
-import { throwIfCancelled } from "./context";
+import { continueLater, throwIfCancelled } from "./context";
 
 // Ogni task del worker ha un handler. I moduli reali si registrano qui man mano.
 export const jobs: Record<string, JobHandler> = {
@@ -23,14 +23,17 @@ export const jobs: Record<string, JobHandler> = {
   "images.generate": imagesGenerate,
   "documents.ocr": documentsOcr,
   "library.extract": libraryExtract,
-  // Lavoro di prova: verifica coda, avanzamento e annullamento senza chiamare l'AI.
+  // Lavoro di prova: verifica coda, avanzamento, annullamento e ripresa (chunks) senza chiamare l'AI.
   "system.selftest": async (ctx) => {
     const steps = Number(ctx.input.steps ?? 5);
+    const chunks = Number(ctx.input.chunks ?? 1);
+    const done = Number(ctx.input.done ?? 0);
     for (let i = 1; i <= steps; i++) {
       throwIfCancelled(ctx.signal);
       await new Promise((r) => setTimeout(r, 300));
-      ctx.progress((i / steps) * 100, `Passo ${i} di ${steps}`);
+      ctx.progress(((done + i / steps) / chunks) * 100, `Parte ${done + 1} di ${chunks} · passo ${i} di ${steps}`);
     }
-    return { ok: true, steps };
+    if (done + 1 < chunks) return continueLater({ ...ctx.input, done: done + 1 }, `Parte ${done + 1} di ${chunks} finita: continua…`);
+    return { ok: true, steps, chunks };
   },
 };

@@ -11,9 +11,8 @@ export function getProject(id: string) {
 }
 
 /** Codice progressivo per anno: EVT-2026-001, EVT-2026-002… */
-export function nextCounter(key: string) {
-  const db = getDb();
-  const row = db
+export async function nextCounter(key: string) {
+  const row = await getDb()
     .insert(schema.counters)
     .values({ key, value: 1 })
     .onConflictDoUpdate({ target: schema.counters.key, set: { value: sql`${schema.counters.value} + 1` } })
@@ -22,14 +21,14 @@ export function nextCounter(key: string) {
   return row.value;
 }
 
-export function createProject(input: Omit<typeof schema.projects.$inferInsert, "id" | "code">) {
+export async function createProject(input: Omit<typeof schema.projects.$inferInsert, "id" | "code">) {
   const year = new Date().getFullYear();
-  const n = nextCounter(`project-${year}`);
+  const n = await nextCounter(`project-${year}`);
   const project = { ...input, id: newId("prj"), code: `EVT-${year}-${String(n).padStart(3, "0")}` };
-  getDb().insert(schema.projects).values(project).run();
+  await getDb().insert(schema.projects).values(project).run();
   return project;
 }
 
-export function updateProject(id: string, patch: Partial<typeof schema.projects.$inferInsert>) {
-  getDb().update(schema.projects).set(patch).where(eq(schema.projects.id, id)).run();
+export async function updateProject(id: string, patch: Partial<typeof schema.projects.$inferInsert>) {
+  await getDb().update(schema.projects).set(patch).where(eq(schema.projects.id, id)).run();
 }

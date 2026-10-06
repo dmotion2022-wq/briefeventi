@@ -3,6 +3,7 @@ import { CircleCheck, Info, TriangleAlert, OctagonAlert } from "lucide-react";
 import { consistencyFor } from "@/domain/consistency/load";
 import { Card, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { requireUser } from "@/auth/session";
 
 const ICON = {
   error: <OctagonAlert size={16} className="mt-0.5 shrink-0 text-warn" />,
@@ -11,8 +12,9 @@ const ICON = {
 };
 
 export default async function CheckPage(props: PageProps<"/projects/[id]/check">) {
+  await requireUser();
   const { id } = await props.params;
-  const result = consistencyFor(id);
+  const result = await consistencyFor(id);
   if (!result?.hasData) {
     return <EmptyState title="Niente da controllare ancora">Il controllo lavora su scaletta, moduli e preventivo.</EmptyState>;
   }

@@ -5,10 +5,12 @@ import { redirect } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { hasApiKey } from "@/ai/qwen";
+import { requireUser } from "@/auth/session";
 import { getDb, schema } from "@/db/client";
 import { createProject, updateProject } from "@/db/queries/projects";
 import { createDocument, mimeFromName, type DocumentKind } from "@/domain/documents";
 import { eurosToCents } from "@/lib/money";
+import { deleteFile, readFile } from "@/lib/storage";
 import type { BriefData } from "@/ai/schemas/brief";
 import { enqueueRun } from "@/worker/runs";
 
@@ -20,6 +22,12 @@ function kindFor(filename: string, isTender: boolean): DocumentKind {
   return isTender ? "tender" : "brief";
 }
 
+const mimeOf = (name: string, type?: string | null) => (type && type !== "application/octet-stream" ? type : mimeFromName(name));
+
+/**
+ * File allegati al form: sul Mac arrivano con il form ("files"); online il browser li carica
+ * prima nell'archivio (limite di 4,5 MB delle richieste su Vercel) e qui arrivano i percorsi ("uploaded").
+ */
 async function saveUploads(projectId: string, form: FormData, isTender: boolean) {
   const files = form.getAll("files").filter((f): f is File => f instanceof File && f.size > 0);
   for (const file of files) {
@@ -27,11 +35,29 @@ async function saveUploads(projectId: string, form: FormData, isTender: boolean)
       projectId,
       kind: kindFor(file.name, isTender),
       filename: file.name,
-      mime: file.type && file.type !== "application/octet-stream" ? file.type : mimeFromName(file.name),
+      mime: mimeOf(file.name, file.type),
       buffer: Buffer.from(await file.arrayBuffer()),
     });
   }
-  return files.length;
+  let uploaded = 0;
+  for (const raw of form.getAll("uploaded")) {
+    let item: { pathname?: unknown; name?: unknown; type?: unknown };
+    try {
+      item = JSON.parse(String(raw));
+    } catch {
+      continue;
+    }
+    const pathname = String(item.pathname ?? "");
+    // solo i caricamenti temporanei fatti dal browser, mai altri file dell'archivio
+    if (!/^uploads\/[^/]+$/.test(pathname)) continue;
+    const buffer = await readFile(pathname);
+    if (!buffer) continue;
+    const name = String(item.name ?? pathname.split("/").pop());
+    await createDocument({ projectId, kind: kindFor(name, isTender), filename: name, mime: mimeOf(name, String(item.type ?? "")), buffer });
+    await deleteFile(pathname);
+    uploaded++;
+  }
+  return files.length + uploaded;
 }
 
 const NewProject = z.object({
@@ -41,10 +67,11 @@ const NewProject = z.object({
 });
 
 export async function createProjectAction(form: FormData) {
+  await requireUser();
   const base = NewProject.parse({ title: text(form.get("title")), clientName: text(form.get("clientName")), sector: form.get("sector") });
   const isTender = form.get("isTender") === "on";
   const confidential = form.get("confidential") === "on";
-  const project = createProject({
+  const project = await createProject({
     ...base,
     eventType: orNull(form.get("eventType")),
     isTender,
@@ -69,13 +96,14 @@ export async function createProjectAction(form: FormData) {
   }
   const uploaded = await saveUploads(project.id, form, isTender);
   if ((pasted || uploaded) && hasApiKey()) {
-    enqueueRun({ task: "brief.extract", projectId: project.id });
+    await enqueueRun({ task: "brief.extract", projectId: project.id });
   }
   redirect(`/projects/${project.id}/brief`);
 }
 
 export async function addDocumentsAction(projectId: string, form: FormData) {
-  const project = getDb().select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+  await requireUser();
+  const project = await getDb().select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
   if (!project) return;
   const pasted = text(form.get("briefText"));
   if (pasted) {
@@ -92,7 +120,8 @@ export async function addDocumentsAction(projectId: string, form: FormData) {
 }
 
 export async function deleteDocumentAction(projectId: string, documentId: string) {
-  getDb()
+  await requireUser();
+  await getDb()
     .delete(schema.documents)
     .where(and(eq(schema.documents.id, documentId), eq(schema.documents.projectId, projectId)))
     .run();
@@ -100,12 +129,14 @@ export async function deleteDocumentAction(projectId: string, documentId: string
 }
 
 export async function runTask(projectId: string, task: "brief.extract" | "gap.analyze") {
-  enqueueRun({ task, projectId });
+  await requireUser();
+  await enqueueRun({ task, projectId });
   revalidatePath(`/projects/${projectId}`, "layout");
 }
 
 export async function confirmBriefAction(projectId: string, briefId: string) {
-  getDb()
+  await requireUser();
+  await getDb()
     .update(schema.briefs)
     .set({ status: "confirmed", confirmedAt: new Date().toISOString() })
     .where(and(eq(schema.briefs.id, briefId), eq(schema.briefs.projectId, projectId)))
@@ -125,8 +156,9 @@ const num = (v: FormDataEntryValue | null) => {
 
 /** Correzioni manuali ai campi principali del brief (la versione resta la stessa, torna in bozza). */
 export async function updateBriefAction(projectId: string, briefId: string, form: FormData) {
+  await requireUser();
   const db = getDb();
-  const brief = db.select().from(schema.briefs).where(eq(schema.briefs.id, briefId)).get();
+  const brief = await db.select().from(schema.briefs).where(and(eq(schema.briefs.id, briefId), eq(schema.briefs.projectId, projectId))).get();
   if (!brief) return;
   const d = structuredClone(brief.data) as unknown as BriefData;
   d.summary = text(form.get("summary"));
@@ -139,8 +171,8 @@ export async function updateBriefAction(projectId: string, briefId: string, form
   d.dates = { ...d.dates, start: orNull(form.get("start")), end: orNull(form.get("end")) };
   d.location = { ...d.location, city: orNull(form.get("city")), region: orNull(form.get("region")) };
   d.budget = { ...d.budget, totalEuro: num(form.get("budgetTotal")), perPaxEuro: num(form.get("budgetPerPax")) };
-  db.update(schema.briefs).set({ data: d, status: "draft", confirmedAt: null }).where(eq(schema.briefs.id, briefId)).run();
-  updateProject(projectId, {
+  await db.update(schema.briefs).set({ data: d, status: "draft", confirmedAt: null }).where(eq(schema.briefs.id, briefId)).run();
+  await updateProject(projectId, {
     eventType: d.eventType || null,
     paxTarget: d.audience.paxTarget ?? d.audience.paxMax ?? null,
     paxMin: d.audience.paxMin,
@@ -155,7 +187,8 @@ export async function updateBriefAction(projectId: string, briefId: string, form
 }
 
 export async function answerGapAction(projectId: string, gapId: string, form: FormData) {
-  getDb()
+  await requireUser();
+  await getDb()
     .update(schema.gapItems)
     .set({ answer: orNull(form.get("answer")), assumptionAccepted: form.get("accept") === "on" })
     .where(and(eq(schema.gapItems.id, gapId), eq(schema.gapItems.projectId, projectId)))
@@ -164,16 +197,18 @@ export async function answerGapAction(projectId: string, gapId: string, form: Fo
 }
 
 export async function updateProjectStatusAction(projectId: string, form: FormData) {
+  await requireUser();
   const status = z.enum(schema.PROJECT_STATUSES).parse(form.get("status"));
-  updateProject(projectId, { status });
+  await updateProject(projectId, { status });
   revalidatePath(`/projects/${projectId}`, "layout");
 }
 
-/** Elimina un progetto con tutto ciò che contiene (documenti, preventivi, collegamenti). I file degli export restano in data/. */
+/** Elimina un progetto con tutto ciò che contiene (documenti, preventivi, collegamenti). I file degli export restano nell'archivio. */
 export async function deleteProjectAction(projectId: string) {
+  await requireUser();
   const db = getDb();
   // i prezzi confermati nel progetto restano nel listino: sono dati reali dei fornitori
-  db.delete(schema.projects).where(eq(schema.projects.id, projectId)).run();
+  await db.delete(schema.projects).where(eq(schema.projects.id, projectId)).run();
   revalidatePath("/");
   redirect("/");
 }

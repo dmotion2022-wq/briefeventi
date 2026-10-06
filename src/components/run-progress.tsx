@@ -14,6 +14,8 @@ type RunState = {
   startedAt: string | null;
   heartbeatAt: string | null;
   now: string;
+  /** "worker" sul Mac, "cloud" online (ogni lavoro parte in una funzione sua) */
+  mode?: "worker" | "cloud";
 };
 
 const seconds = (from: string | null, to: string) => (from ? Math.max(0, (Date.parse(to) - Date.parse(from)) / 1000) : 0);
@@ -21,11 +23,16 @@ const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60))
 
 /** Avvisi quando il lavoro non avanza per motivi esterni: worker spento o fermo. Tempi misurati sull'orologio del server. */
 function stuckHint(run: RunState) {
-  if (run.status === "queued" && seconds(run.createdAt, run.now) > 10) {
-    return "Il lavoro non è ancora partito: il worker sembra spento. Chiudi Event Studio e riaprilo con il doppio clic.";
+  const online = run.mode === "cloud";
+  if (run.status === "queued" && seconds(run.heartbeatAt ?? run.createdAt, run.now) > 10) {
+    return online
+      ? "Il lavoro non è ancora partito: lo rilancio da solo. Se resta fermo, annullalo e riprova."
+      : "Il lavoro non è ancora partito: il worker sembra spento. Chiudi Event Studio e riaprilo con il doppio clic.";
   }
   if (run.status === "running" && seconds(run.heartbeatAt, run.now) > 20) {
-    return "Il worker non dà segni di vita da più di 20 secondi: Event Studio è ancora acceso?";
+    return online
+      ? "Nessun segnale da più di 20 secondi: se non riparte entro un minuto, il lavoro risulterà interrotto e potrai riprovare."
+      : "Il worker non dà segni di vita da più di 20 secondi: Event Studio è ancora acceso?";
   }
   return null;
 }
@@ -53,7 +60,7 @@ export function RunProgress({ runId, label }: { runId: string; label?: string })
       } catch {
         // il server di sviluppo può riavviarsi: si riprova al giro successivo
       }
-      timer = setTimeout(poll, 1200);
+      timer = setTimeout(() => void poll(), 1200);
     };
     void poll();
     return () => {
@@ -63,7 +70,7 @@ export function RunProgress({ runId, label }: { runId: string; label?: string })
   }, [runId, router]);
 
   if (!run || !["queued", "running"].includes(run.status)) {
-    if (run?.status === "failed") {
+    if (run?.status === "failed" || run?.status === "interrupted") {
       return <div className="rounded-sm bg-warn-soft px-3 py-2 text-[13px] text-warn">Errore: {run.error}</div>;
     }
     return null;
@@ -90,7 +97,7 @@ export function RunProgress({ runId, label }: { runId: string; label?: string })
         variant="ghost"
         size="sm"
         title="Annulla"
-        onClick={() => fetch(`/api/runs/${runId}`, { method: "DELETE" }).then(() => router.refresh())}
+        onClick={() => void fetch(`/api/runs/${runId}`, { method: "DELETE" }).then(() => router.refresh())}
       >
         <X size={14} />
       </Button>

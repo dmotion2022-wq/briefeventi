@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
+import { requireUser } from "@/auth/session";
 
 export const metadata = { title: "Import da Drive" };
 
@@ -32,9 +33,10 @@ type Output = {
 const diffLine = (label: string, d?: Diff) =>
   d ? `${label}: ${d.added.length} nuovi, ${d.changed.length} aggiornati, ${d.unchanged} invariati` : null;
 
-export default function ImportPage() {
-  const source = getSetting("drive.source");
-  const runs = getDb()
+export default async function ImportPage() {
+  await requireUser();
+  const source = await getSetting("drive.source");
+  const runs = await getDb()
     .select()
     .from(schema.aiRuns)
     .where(inArray(schema.aiRuns.task, ["library.import", "documents.ocr", "library.extract"]))
@@ -42,7 +44,8 @@ export default function ImportPage() {
     .limit(8)
     .all();
   const active = runs.find((r) => r.status === "queued" || r.status === "running");
-  const ocrPending = getDb().select({ id: schema.documents.id }).from(schema.documents).where(eq(schema.documents.extractionStatus, "ocr_needed")).all().length;
+  const ocrPending = (await getDb().select({ id: schema.documents.id }).from(schema.documents).where(eq(schema.documents.extractionStatus, "ocr_needed")).all())
+    .length;
 
   return (
     <div className="mx-auto max-w-4xl">

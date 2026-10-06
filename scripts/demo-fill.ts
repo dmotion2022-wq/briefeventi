@@ -3,30 +3,30 @@
 //   npx tsx scripts/demo-fill.ts            → crea il progetto "Esempio"
 //   npx tsx scripts/demo-fill.ts --delete   → lo elimina
 import "@/lib/load-env";
-import fs from "node:fs";
-import path from "node:path";
 import sharp from "sharp";
 import { eq, like } from "drizzle-orm";
 import { getDb, schema } from "@/db/client";
+import { prepareDb } from "@/db/prepare";
 import { createProject } from "@/db/queries/projects";
 import { createQuote } from "@/db/queries/quotes";
 import { createDocument } from "@/domain/documents";
 import { planQuoteFromComponents } from "@/domain/quote/from-components";
 import { proposeArchiveSuppliers } from "@/domain/suppliers/propose";
 import { newId } from "@/lib/ids";
-import { dataPath, ensureDataDirs } from "@/lib/paths";
+import { saveFile } from "@/lib/storage";
 
 const TITLE = "ESEMPIO · Kick-off forza vendite 2027";
+await prepareDb();
 const db = getDb();
 
 if (process.argv.includes("--delete")) {
-  const rows = db.select().from(schema.projects).where(like(schema.projects.title, "ESEMPIO%")).all();
-  for (const p of rows) db.delete(schema.projects).where(eq(schema.projects.id, p.id)).run();
+  const rows = await db.select().from(schema.projects).where(like(schema.projects.title, "ESEMPIO%")).all();
+  for (const p of rows) await db.delete(schema.projects).where(eq(schema.projects.id, p.id)).run();
   console.log(`Eliminati ${rows.length} progetti di esempio`);
   process.exit(0);
 }
 
-const project = createProject({
+const project = await createProject({
   title: TITLE,
   clientName: "Cliente dimostrativo Pharma",
   sector: "pharma",
@@ -73,7 +73,7 @@ const brief = {
   constraints: ["Codice deontologico Farmindustria: ospitalità sobria e limitata all'evento"],
   evidence: [{ field: "partecipanti", quote: "circa 180 informatori scientifici", page: 1, verified: true }],
 };
-db.insert(schema.briefs).values({ id: newId("brf"), projectId: pid, version: 1, status: "confirmed", confirmedAt: new Date().toISOString(), data: brief }).run();
+await db.insert(schema.briefs).values({ id: newId("brf"), projectId: pid, version: 1, status: "confirmed", confirmedAt: new Date().toISOString(), data: brief }).run();
 
 const concepts = {
   safe: {
@@ -95,7 +95,8 @@ const concepts = {
   },
 };
 const conceptId = newId("cnc");
-db.insert(schema.concepts)
+await db
+  .insert(schema.concepts)
   .values({
     id: conceptId,
     projectId: pid,
@@ -106,7 +107,7 @@ db.insert(schema.concepts)
     critique: { scores: [{ criterion: "Aderenza agli obiettivi del brief", score: 8, reason: "Lega strategia e territori" }], strengths: ["Chiaro", "Sobrio"], weaknesses: ["Momento wow tecnico"], fixes: ["Prevedere un'alternativa senza proiezione"] },
   })
   .run();
-db.update(schema.projects).set({ selectedConceptId: conceptId }).where(eq(schema.projects.id, pid)).run();
+await db.update(schema.projects).set({ selectedConceptId: conceptId }).where(eq(schema.projects.id, pid)).run();
 
 const bible = {
   name: "Rotta 2027",
@@ -134,7 +135,7 @@ const bible = {
   dos: ["parlare per territori", "usare la mappa come filo"],
   donts: ["slogan motivazionali generici", "lusso ostentato"],
 };
-db.insert(schema.conceptBibles).values({ id: newId("bib"), projectId: pid, conceptId, version: 1, data: bible }).run();
+await db.insert(schema.conceptBibles).values({ id: newId("bib"), projectId: pid, conceptId, version: 1, data: bible }).run();
 
 const slots = [
   [1, "10:00", "11:00", "registration", "Accoglienza e welcome coffee", "Ritiro della mappa personale", "La mappa"],
@@ -150,13 +151,14 @@ const slots = [
   [2, "12:30", "13:30", "lunch", "Pranzo e partenze", null, null],
 ] as const;
 const slotIds: string[] = [];
-slots.forEach(([day, start, end, kind, title, description, beat], i) => {
+for (const [i, [day, start, end, kind, title, description, beat]] of slots.entries()) {
   const id = newId("slt");
   slotIds.push(id);
-  db.insert(schema.agendaSlots)
+  await db
+    .insert(schema.agendaSlots)
     .values({ id, projectId: pid, day, date: day === 1 ? "2027-01-28" : "2027-01-29", startTime: start, endTime: end, kind, title, description, narrativeBeat: beat, room: kind === "breakout" ? "Sale A-D" : kind === "gala" ? "Navata" : "Sala principale", pax: 180, position: i + 1 })
     .run();
-});
+}
 const s = (i: number) => slotIds[i];
 const est = (unit: number | null, fixed: number | null, min: number, max: number, basis: string) => ({
   unitCostCents: unit != null ? unit * 100 : null,
@@ -228,11 +230,11 @@ const modules: Record<string, { data: Record<string, unknown>; components: Comp[
 };
 for (const [kind, { data, components }] of Object.entries(modules)) {
   const moduleId = newId("mod");
-  db.insert(schema.modules).values({ id: moduleId, projectId: pid, kind: kind as never, data, builtFrom: { bible: 1 } }).run();
-  components.forEach((c, i) =>
-    db
-      .insert(schema.components)
-      .values({
+  await db.insert(schema.modules).values({ id: moduleId, projectId: pid, kind: kind as never, data, builtFrom: { bible: 1 } }).run();
+  await db
+    .insert(schema.components)
+    .values(
+      components.map((c, i) => ({
         id: newId("cmp"),
         projectId: pid,
         moduleId,
@@ -247,30 +249,32 @@ for (const [kind, { data, components }] of Object.entries(modules)) {
         pricingModelHint: c.pricingModel,
         optional: c.optional ?? false,
         position: i + 1,
-      })
-      .run(),
-  );
+      })),
+    )
+    .run();
 }
 
 // preventivo dai componenti, come fa il pulsante "Genera il preventivo"
-const comps = db.select().from(schema.components).where(eq(schema.components.projectId, pid)).all();
-const plan = planQuoteFromComponents(comps.map((c) => ({ ...c, specs: c.specs as never })), db.select().from(schema.checklistItems).all());
-const quoteId = createQuote(pid, `Preventivo ${TITLE}`);
+const comps = await db.select().from(schema.components).where(eq(schema.components.projectId, pid)).all();
+const plan = planQuoteFromComponents(
+  comps.map((c) => ({ ...c, specs: c.specs as never })),
+  await db.select().from(schema.checklistItems).all(),
+);
+const quoteId = await createQuote(pid, `Preventivo ${TITLE}`);
 const sectionIds = new Map<string, string>();
 for (const sec of plan.sections) {
   const id = newId("qsc");
   sectionIds.set(sec.title, id);
-  db.insert(schema.quoteSections).values({ id, quoteId, position: sec.position, title: sec.title }).run();
+  await db.insert(schema.quoteSections).values({ id, quoteId, position: sec.position, title: sec.title }).run();
 }
 for (const l of plan.lines) {
   const { sectionTitle, ...line } = l;
-  db.insert(schema.quoteLines).values({ id: newId("qln"), quoteId, sectionId: sectionIds.get(sectionTitle)!, ...line }).run();
+  await db.insert(schema.quoteLines).values({ id: newId("qln"), quoteId, sectionId: sectionIds.get(sectionTitle)!, ...line }).run();
 }
-db.update(schema.quotes).set({ agencyFeeBp: 1000 }).where(eq(schema.quotes.id, quoteId)).run();
-const links = proposeArchiveSuppliers(pid, quoteId);
+await db.update(schema.quotes).set({ agencyFeeBp: 1000 }).where(eq(schema.quotes.id, quoteId)).run();
+const links = await proposeArchiveSuppliers(pid, quoteId);
 
 // immagini segnaposto astratte (nessuna AI): gradienti con la palette della bible
-ensureDataDirs();
 const svg = (w: number, h: number, a: string, b: string, c: string, seed: number) =>
   Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/>${Array.from({ length: 9 }, (_, i) => `<path d="M ${(i * 137 + seed) % w} ${h} C ${w / 3} ${(i * 61 + seed) % h}, ${(2 * w) / 3} ${(i * 97) % h}, ${w} ${(i * 43 + seed) % h}" stroke="${c}" stroke-opacity="0.55" stroke-width="${2 + (i % 3)}" fill="none"/>`).join("")}<circle cx="${w / 2}" cy="${h / 2}" r="${Math.min(w, h) / 10}" fill="${c}" fill-opacity="0.35"/></svg>`);
 const images = [
@@ -282,9 +286,8 @@ const images = [
 for (const [i, img] of images.entries()) {
   const [w, h] = img.size.split("*").map(Number);
   const id = newId("img");
-  const rel = path.join("images", `${id}.png`);
-  await sharp(svg(w, h, img.colors[0], img.colors[1], img.colors[2], i * 97)).png().toFile(dataPath(rel));
-  db.insert(schema.imageAssets).values({ id, projectId: pid, purpose: img.purpose, prompt: "Segnaposto astratto (esempio, nessuna AI)", model: "segnaposto", size: img.size, path: rel, width: w, height: h, selected: i === 0 }).run();
+  const rel = await saveFile(`images/${id}.png`, await sharp(svg(w, h, img.colors[0], img.colors[1], img.colors[2], i * 97)).png().toBuffer(), "image/png");
+  await db.insert(schema.imageAssets).values({ id, projectId: pid, purpose: img.purpose, prompt: "Segnaposto astratto (esempio, nessuna AI)", model: "segnaposto", size: img.size, path: rel, width: w, height: h, selected: i === 0 }).run();
 }
 console.log(`Creato ${project.code} "${TITLE}" con preventivo, ${links} fornitori proposti dall'archivio e ${images.length} immagini segnaposto.`);
-console.log(fs.existsSync(dataPath("images")) ? `Apri http://localhost:3100/projects/${pid}` : "");
+console.log(`Apri http://localhost:3100/projects/${pid}`);

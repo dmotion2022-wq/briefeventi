@@ -20,40 +20,41 @@ let db: typeof import("@/db/client");
 beforeAll(async () => {
   mod = await import("@/domain/import/drive");
   db = await import("@/db/client");
+  await (await import("@/db/prepare")).prepareDb();
 });
 
 describe("applicazione dell'import", () => {
-  it("prima importazione: tutto nuovo, fornitori deduplicati", () => {
+  it("prima importazione: tutto nuovo, fornitori deduplicati", async () => {
     const plan = mod.buildPlan({ works: WORKS, location: LOCATION, budgets: BUDGETS });
-    const diff = mod.applyPlan(plan);
+    const diff = await mod.applyPlan(plan);
     expect(diff.works.added).toEqual(["Alfa.pdf"]);
     expect(diff.venues.added).toEqual(["Hotel Beta"]);
     expect(diff.benchmarks.added).toHaveLength(2);
 
     const d = db.getDb();
-    const suppliers = d.select().from(db.schema.suppliers).all();
+    const suppliers = await d.select().from(db.schema.suppliers).all();
     // "Gamma Service Srl" e "GAMMA SERVICE S.R.L." sono lo stesso fornitore; più l'hotel
     expect(suppliers.map((s) => s.name).sort()).toEqual(["Gamma Service Srl", "Hotel Beta"]);
     expect(suppliers.find((s) => s.name === "Hotel Beta")?.kind).toBe("hotel");
-    const venue = d.select().from(db.schema.venues).get();
+    const venue = await d.select().from(db.schema.venues).get();
     expect(venue?.rooms).toBe(200);
     expect(venue?.supplierId).toBeTruthy();
   });
 
-  it("seconda importazione identica: nessuna modifica", () => {
+  it("seconda importazione identica: nessuna modifica", async () => {
     const plan = mod.buildPlan({ works: WORKS, location: LOCATION, budgets: BUDGETS });
-    const diff = mod.applyPlan(plan);
+    const diff = await mod.applyPlan(plan);
     expect(diff.works).toEqual({ added: [], changed: [], unchanged: 1 });
     expect(diff.venues).toEqual({ added: [], changed: [], unchanged: 1 });
     expect(diff.benchmarks).toEqual({ added: [], changed: [], unchanged: 2 });
-    expect(db.getDb().select().from(db.schema.suppliers).all()).toHaveLength(2);
+    expect(await db.getDb().select().from(db.schema.suppliers).all()).toHaveLength(2);
   });
 
-  it("riga modificata nel foglio: risulta aggiornata", () => {
+  it("riga modificata nel foglio: risulta aggiornata", async () => {
     const plan = mod.buildPlan({ works: WORKS.replace("~300", "~350"), location: LOCATION, budgets: BUDGETS });
-    expect(mod.diffPlan(plan).works.changed).toEqual(["Alfa.pdf"]);
-    mod.applyPlan(plan);
-    const work = db.getDb().select().from(db.schema.referenceWorks).get();
+    expect((await mod.diffPlan(plan)).works.changed).toEqual(["Alfa.pdf"]);
+    await mod.applyPlan(plan);
+    const work = await db.getDb().select().from(db.schema.referenceWorks).get();
     expect(work?.paxMax).toBe(350);
   });
 });

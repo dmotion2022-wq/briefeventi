@@ -1,11 +1,10 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { extractLinks, extractText, getDocumentProxy } from "unpdf";
 import { getDb, schema } from "@/db/client";
 import { newId } from "@/lib/ids";
-import { dataPath, ensureDataDirs } from "@/lib/paths";
+import { fileExists, readFile, saveFile } from "@/lib/storage";
 
 // Archiviazione dei documenti (brief, gare, brochure, preventivi) e testo per pagina.
 // I file sono salvati per hash: lo stesso PDF caricato due volte occupa spazio una volta.
@@ -29,16 +28,18 @@ export function mimeFromName(filename: string): string {
   return "text/plain";
 }
 
-export function storeBuffer(buffer: Buffer, mime: string) {
-  ensureDataDirs();
+export async function storeBuffer(buffer: Buffer, mime: string) {
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
-  const rel = path.join("files", `${sha256}.${EXT_BY_MIME[mime] ?? "bin"}`);
-  const abs = dataPath(rel);
-  if (!fs.existsSync(abs)) fs.writeFileSync(abs, buffer);
+  const rel = `files/${sha256}.${EXT_BY_MIME[mime] ?? "bin"}`;
+  if (!(await fileExists(rel))) await saveFile(rel, buffer, mime);
   return { sha256, path: rel, sizeBytes: buffer.length };
 }
 
-export const readStored = (relPath: string) => fs.readFileSync(dataPath(relPath));
+export async function readStored(relPath: string) {
+  const buffer = await readFile(relPath);
+  if (!buffer) throw new Error(`File mancante nell'archivio: ${relPath}`);
+  return buffer;
+}
 
 /** Testo pagina per pagina. Le pagine senza testo (scansioni, immagini) vanno all'OCR. */
 export async function extractPages(buffer: Buffer, mime: string): Promise<{ pages: ExtractedPage[]; links: string[] }> {
@@ -97,8 +98,8 @@ export async function createDocument(args: {
 }) {
   const db = getDb();
   const mime = args.mime ?? mimeFromName(args.filename);
-  const stored = storeBuffer(args.buffer, mime);
-  const existing = db
+  const stored = await storeBuffer(args.buffer, mime);
+  const existing = await db
     .select()
     .from(schema.documents)
     .where(
@@ -127,15 +128,18 @@ export async function createDocument(args: {
     driveFileId: args.driveFileId ?? null,
     sourceUrl: args.sourceUrl ?? null,
   };
-  db.transaction((tx) => {
-    tx.insert(schema.documents).values(document).run();
+  await db.transaction(async (tx) => {
+    await tx.insert(schema.documents).values(document).run();
     if (pages.length) {
-      tx.insert(schema.documentPages)
+      await tx
+        .insert(schema.documentPages)
         .values(pages.map((p) => ({ documentId: id, pageNumber: p.pageNumber, text: p.text, textSource: p.textSource })))
         .run();
     }
   });
-  return { document: db.select().from(schema.documents).where(eq(schema.documents.id, id)).get()!, links, created: true };
+  const saved = await db.select().from(schema.documents).where(eq(schema.documents.id, id)).get();
+  if (!saved) throw new Error("Documento non salvato");
+  return { document: saved, links, created: true };
 }
 
 export function documentPages(documentId: string) {

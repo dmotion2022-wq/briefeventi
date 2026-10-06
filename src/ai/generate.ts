@@ -17,13 +17,13 @@ export type AiCallContext = {
   mask?: Mask;
 };
 
-export const modelFor = (tier: ModelTier) => getSetting("ai.models")[tier];
+export const modelFor = async (tier: ModelTier) => (await getSetting("ai.models"))[tier];
 
 /** Costo stimato in micro-euro a partire dai prezzi in USD delle Impostazioni. */
-export function costMicros(model: string, usage: Usage, extra: { calls?: number; images?: number } = {}) {
-  const price = getSetting("ai.prices")[model];
+export async function costMicros(model: string, usage: Usage, extra: { calls?: number; images?: number } = {}) {
+  const price = (await getSetting("ai.prices"))[model];
   if (!price) return 0;
-  const fx = getSetting("ai.usdToEur");
+  const fx = await getSetting("ai.usdToEur");
   const uncached = Math.max(0, usage.inputTokens - usage.cachedTokens);
   const usd =
     (uncached / 1e6) * (price.inputPerMTok ?? 0) +
@@ -34,7 +34,7 @@ export function costMicros(model: string, usage: Usage, extra: { calls?: number;
   return Math.round(usd * fx * 1e6);
 }
 
-function record(
+async function record(
   ctx: AiCallContext,
   model: string,
   kind: "chat" | "search" | "image" | "ocr",
@@ -42,7 +42,8 @@ function record(
   started: number,
   extra: { calls?: number; images?: number; error?: string } = {},
 ) {
-  recordAiCall({
+  const durationMs = Date.now() - started;
+  await recordAiCall({
     runId: ctx.runId ?? null,
     projectId: ctx.projectId ?? null,
     task: ctx.task,
@@ -52,8 +53,8 @@ function record(
     outputTokens: usage.outputTokens,
     cachedTokens: usage.cachedTokens,
     units: extra.images ?? extra.calls ?? 0,
-    costMicros: costMicros(model, usage, extra),
-    durationMs: Date.now() - started,
+    costMicros: await costMicros(model, usage, extra),
+    durationMs,
     ok: !extra.error,
     error: extra.error ?? null,
   });
@@ -80,8 +81,8 @@ export async function generateObject<T>(
   },
 ): Promise<T> {
   const tier = opts.tier ?? "max";
-  const model = modelFor(tier);
-  const thinking = getSetting("ai.thinking")[tier] ?? false;
+  const model = await modelFor(tier);
+  const thinking = (await getSetting("ai.thinking"))[tier] ?? false;
   const report = streamReporter(ctx.runId);
   let messages = maskMessages(
     [
@@ -94,7 +95,7 @@ export async function generateObject<T>(
   if (thinking) {
     const started = Date.now();
     const draft = await chatText({ model, messages, signal: ctx.signal, thinking: true, temperature: opts.temperature, onProgress: report });
-    record(ctx, model, "chat", draft.usage, started);
+    await record(ctx, model, "chat", draft.usage, started);
     messages = [
       ...messages,
       { role: "assistant", content: draft.text },
@@ -102,7 +103,7 @@ export async function generateObject<T>(
     ];
   }
 
-  const structModel = thinking ? modelFor("flash") : model;
+  const structModel = thinking ? await modelFor("flash") : model;
   const started = Date.now();
   try {
     const { data, usage } = await chatJson({
@@ -114,10 +115,10 @@ export async function generateObject<T>(
       temperature: thinking ? 0 : opts.temperature,
       onText: (chars) => report({ phase: "writing", chars }),
     });
-    record(ctx, structModel, "chat", usage, started);
+    await record(ctx, structModel, "chat", usage, started);
     return ctx.mask ? unmaskDeep(data, ctx.mask) : data;
   } catch (err) {
-    record(ctx, structModel, "chat", { inputTokens: 0, outputTokens: 0, cachedTokens: 0 }, started, {
+    await record(ctx, structModel, "chat", { inputTokens: 0, outputTokens: 0, cachedTokens: 0 }, started, {
       error: err instanceof Error ? err.message : String(err),
     });
     throw err;
@@ -129,7 +130,7 @@ export async function generateText(
   ctx: AiCallContext,
   opts: { tier?: ModelTier; system: string; prompt: string; temperature?: number },
 ) {
-  const model = modelFor(opts.tier ?? "flash");
+  const model = await modelFor(opts.tier ?? "flash");
   const started = Date.now();
   const res = await chatText({
     model,
@@ -144,15 +145,15 @@ export async function generateText(
     temperature: opts.temperature,
     onProgress: streamReporter(ctx.runId),
   });
-  record(ctx, model, "chat", res.usage, started);
+  await record(ctx, model, "chat", res.usage, started);
   return ctx.mask ? unmaskDeep(res.text, ctx.mask) : res.text;
 }
 
 export async function searchWeb(ctx: AiCallContext, opts: { system: string; query: string }) {
-  const model = modelFor("search");
+  const model = await modelFor("search");
   const started = Date.now();
   const res = await webSearch({ model, system: opts.system, query: opts.query, signal: ctx.signal });
-  record(ctx, model, "search", res.usage, started, { calls: res.searches });
+  await record(ctx, model, "search", res.usage, started, { calls: res.searches });
   return res;
 }
 
@@ -160,17 +161,17 @@ export async function makeImage(
   ctx: AiCallContext,
   opts: { pro?: boolean; prompt: string; negativePrompt?: string; size?: string; seed?: number },
 ) {
-  const model = modelFor(opts.pro ? "image_pro" : "image");
+  const model = await modelFor(opts.pro ? "image_pro" : "image");
   const started = Date.now();
   const res = await generateImageUrl({ model, ...opts, signal: ctx.signal });
-  record(ctx, model, "image", { inputTokens: 0, outputTokens: 0, cachedTokens: 0 }, started, { images: res.images });
+  await record(ctx, model, "image", { inputTokens: 0, outputTokens: 0, cachedTokens: 0 }, started, { images: res.images });
   return { ...res, model };
 }
 
 export async function ocrPage(ctx: AiCallContext, pngBase64: string) {
-  const model = modelFor("ocr");
+  const model = await modelFor("ocr");
   const started = Date.now();
   const res = await ocrImage({ model, pngBase64, signal: ctx.signal });
-  record(ctx, model, "ocr", res.usage, started);
+  await record(ctx, model, "ocr", res.usage, started);
   return res.text;
 }

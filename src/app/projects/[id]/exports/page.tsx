@@ -5,6 +5,7 @@ import { currentQuote } from "@/db/queries/quotes";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatDateTime } from "@/lib/labels";
+import { requireUser } from "@/auth/session";
 
 const KIND = { pptx: "PowerPoint", html: "Pagina web", pdf: "PDF", xlsx: "Excel" } as const;
 const VARIANT = { client: "cliente", internal: "interno", technical: "senza prezzi" } as const;
@@ -23,9 +24,16 @@ function ExportForm({ action, label, icon, children }: { action: string; label: 
 }
 
 export default async function ExportsPage(props: PageProps<"/projects/[id]/exports">) {
+  await requireUser();
   const { id } = await props.params;
-  const quote = currentQuote(id);
-  const history = getDb().select().from(schema.exportsTable).where(eq(schema.exportsTable.projectId, id)).orderBy(desc(schema.exportsTable.createdAt)).limit(30).all();
+  const quote = await currentQuote(id);
+  const history = await getDb()
+    .select()
+    .from(schema.exportsTable)
+    .where(eq(schema.exportsTable.projectId, id))
+    .orderBy(desc(schema.exportsTable.createdAt))
+    .limit(30)
+    .all();
   const pricesToggle = (
     <label className="flex items-center gap-1.5">
       <input type="checkbox" name="prices" value="1" /> mostra il budget

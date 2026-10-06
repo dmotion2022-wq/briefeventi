@@ -6,8 +6,8 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 
 /** Valore salvato; per gli oggetti, i campi aggiunti in versioni successive prendono il default. */
-export function getSetting<K extends SettingKey>(key: K): SettingsShape[K] {
-  const row = getDb().select().from(schema.settings).where(eq(schema.settings.key, key)).get();
+export async function getSetting<K extends SettingKey>(key: K): Promise<SettingsShape[K]> {
+  const row = await getDb().select().from(schema.settings).where(eq(schema.settings.key, key)).get();
   const fallback = DEFAULT_SETTINGS[key];
   if (row == null) return fallback;
   if (isPlainObject(fallback) && isPlainObject(row.value)) {
@@ -16,8 +16,8 @@ export function getSetting<K extends SettingKey>(key: K): SettingsShape[K] {
   return row.value as SettingsShape[K];
 }
 
-export function setSetting<K extends SettingKey>(key: K, value: SettingsShape[K]) {
-  getDb()
+export async function setSetting<K extends SettingKey>(key: K, value: SettingsShape[K]) {
+  await getDb()
     .insert(schema.settings)
     .values({ key, value })
     .onConflictDoUpdate({ target: schema.settings.key, set: { value } })

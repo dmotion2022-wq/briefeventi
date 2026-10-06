@@ -11,6 +11,7 @@ import { Table, Td, Th, THead, Tr } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { SUPPLIER_KIND_LABELS } from "@/lib/labels";
 import { NewSupplierForm } from "./new-supplier-form";
+import { requireUser } from "@/auth/session";
 
 export const metadata = { title: "Fornitori" };
 
@@ -18,7 +19,8 @@ export default async function SuppliersPage(props: PageProps<"/library/suppliers
   const sp = await props.searchParams;
   const q = typeof sp.q === "string" ? sp.q : "";
   const kind = typeof sp.kind === "string" ? sp.kind : "";
-  const rows = listSuppliers({ q, kind });
+  await requireUser();
+  const rows = await listSuppliers({ q, kind });
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -81,7 +83,7 @@ export default async function SuppliersPage(props: PageProps<"/library/suppliers
                 </Td>
                 <Td>
                   <Badge tone={s.source === "manual" ? "violet" : s.source === "web_search" ? "magenta" : "neutral"}>
-                    {{ sheet: "Drive", pdf: "PDF", web_search: "Ricerca", manual: "Manuale" }[s.source]}
+                    {{ sheet: "Drive", pdf: "PDF", web_search: "Ricerca", platform: "Piattaforma", manual: "Manuale" }[s.source]}
                   </Badge>
                 </Td>
               </Tr>

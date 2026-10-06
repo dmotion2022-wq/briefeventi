@@ -8,16 +8,18 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Table, Td, Th, THead, Tr } from "@/components/ui/table";
 import { RUN_STATUS, formatDateTime } from "@/lib/labels";
 import { formatCents } from "@/lib/money";
+import { requireUser } from "@/auth/session";
 
 export const metadata = { title: "Log AI e costi" };
 
 const eurFromMicros = (micros: number) => formatCents(Math.round(micros / 10_000));
 
-export default function RunsPage() {
+export default async function RunsPage() {
+  await requireUser();
   const db = getDb();
-  const runs = listRuns({ limit: 150 });
-  const projects = new Map(db.select({ id: schema.projects.id, title: schema.projects.title }).from(schema.projects).all().map((p) => [p.id, p.title]));
-  const byModel = db
+  const runs = await listRuns({ limit: 150 });
+  const projects = new Map((await db.select({ id: schema.projects.id, title: schema.projects.title }).from(schema.projects).all()).map((p) => [p.id, p.title]));
+  const byModel = await db
     .select({
       model: schema.aiCalls.model,
       calls: sql<number>`count(*)`,
@@ -30,7 +32,7 @@ export default function RunsPage() {
     .groupBy(schema.aiCalls.model)
     .orderBy(desc(sql`sum(${schema.aiCalls.costMicros})`))
     .all();
-  const byProject = db
+  const byProject = await db
     .select({ projectId: schema.aiCalls.projectId, cost: sql<number>`sum(${schema.aiCalls.costMicros})`, calls: sql<number>`count(*)` })
     .from(schema.aiCalls)
     .groupBy(schema.aiCalls.projectId)

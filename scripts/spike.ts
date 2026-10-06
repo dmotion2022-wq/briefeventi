@@ -6,12 +6,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
+import { prepareDb } from "@/db/prepare";
 import { getSetting } from "@/lib/settings";
 import { dataPath, ensureDataDirs } from "@/lib/paths";
 import { chatJson, chatText, generateImageUrl, hasApiKey, listModels, ocrImage, webSearch } from "@/ai/qwen";
 import { extractPhones } from "@/domain/contacts/phone";
 
-const models = getSetting("ai.models");
+await prepareDb();
+const models = await getSetting("ai.models");
 const results: { name: string; ok: boolean; info: string }[] = [];
 
 async function check(name: string, fn: () => Promise<string>) {

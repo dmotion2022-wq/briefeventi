@@ -3,6 +3,7 @@ import { asc, eq, inArray } from "drizzle-orm";
 import { hasApiKey } from "@/ai/qwen";
 import { agendaSlotsOf, latestBible } from "@/ai/context";
 import { MODULE_ORDER, type ModuleData, type ModuleKind } from "@/ai/schemas/development";
+import { requireUser } from "@/auth/session";
 import { getDb, schema } from "@/db/client";
 import { developModulesAction } from "@/server/development";
 import { generateQuoteFromComponentsAction } from "@/server/quotes";
@@ -246,19 +247,22 @@ function ModuleBody({ kind, data, slotName, venueName, formatName }: { kind: Mod
 }
 
 export default async function DevelopPage(props: PageProps<"/projects/[id]/develop">) {
+  await requireUser();
   const { id } = await props.params;
   const sp = await props.searchParams;
   const db = getDb();
   const aiReady = hasApiKey();
-  const slots = agendaSlotsOf(id);
-  const bible = latestBible(id);
-  const modules = db.select().from(schema.modules).where(eq(schema.modules.projectId, id)).all();
+  const [slots, bible, modules] = await Promise.all([
+    agendaSlotsOf(id),
+    latestBible(id),
+    db.select().from(schema.modules).where(eq(schema.modules.projectId, id)).all(),
+  ]);
   const tab = (MODULE_ORDER.includes(sp.tab as ModuleKind) ? sp.tab : modules[0]?.kind ?? "venue") as ModuleKind;
   const current = modules.find((m) => m.kind === tab);
   const components = current
-    ? db.select().from(schema.components).where(eq(schema.components.moduleId, current.id)).orderBy(asc(schema.components.position)).all()
+    ? await db.select().from(schema.components).where(eq(schema.components.moduleId, current.id)).orderBy(asc(schema.components.position)).all()
     : [];
-  const allComponents = db.select().from(schema.components).where(eq(schema.components.projectId, id)).all();
+  const allComponents = await db.select().from(schema.components).where(eq(schema.components.projectId, id)).all();
   const estimate = allComponents.reduce(
     (acc, c) => {
       const e = (c.specs as { estimate?: { minCents: number; maxCents: number } } | null)?.estimate;
@@ -276,8 +280,10 @@ export default async function DevelopPage(props: PageProps<"/projects/[id]/devel
   };
   const d = (current?.data ?? {}) as { candidates?: { venueId: string | null }[] };
   const venueIds = (d.candidates ?? []).map((c) => c.venueId).filter((x): x is string => !!x);
-  const venues = new Map((venueIds.length ? db.select().from(schema.venues).where(inArray(schema.venues.id, venueIds)).all() : []).map((v) => [v.id, v.name]));
-  const formats = new Map(db.select().from(schema.formatIdeas).all().map((f) => [f.id, f.name]));
+  const venues = new Map(
+    (venueIds.length ? await db.select().from(schema.venues).where(inArray(schema.venues.id, venueIds)).all() : []).map((v) => [v.id, v.name]),
+  );
+  const formats = new Map((await db.select().from(schema.formatIdeas).all()).map((f) => [f.id, f.name]));
 
   if (!slots.length || !bible) {
     return <EmptyState title="Prima concept bible e scaletta">I moduli si agganciano agli slot della scaletta e seguono la concept bible.</EmptyState>;

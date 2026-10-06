@@ -1,40 +1,55 @@
-import Database from "better-sqlite3";
-import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
-import path from "node:path";
+import { createClient, type Client } from "@libsql/client";
+import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
+import { pathToFileURL } from "node:url";
 import { dataPath, ensureDataDirs } from "@/lib/paths";
 import * as schema from "./schema";
-import { seedDefaults } from "./seed";
 
-export type Db = BetterSQLite3Database<typeof schema>;
+// Un solo codice per due database: sul Mac il file data/app.db, in cloud Turso
+// (SQLite remoto, stesse tabelle e stesse query). Lo decide TURSO_DATABASE_URL.
 
-type Holder = { db?: Db; sqlite?: Database.Database };
+export type Db = LibSQLDatabase<typeof schema>;
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+/** Database o transazione in corso: le funzioni che scrivono accettano entrambi. */
+export type DbOrTx = Db | Tx;
+
+type Holder = { db?: Db; client?: Client };
 // In sviluppo Next ricarica i moduli: teniamo una sola connessione per processo.
 const holder = globalThis as unknown as { __eventStudioDb?: Holder };
 holder.__eventStudioDb ??= {};
 
-export function getDb(): Db {
-  const h = holder.__eventStudioDb!;
-  if (h.db) return h.db;
+export const isRemoteDb = () => !!process.env.TURSO_DATABASE_URL?.trim();
 
+function connect(): Client {
+  const url = process.env.TURSO_DATABASE_URL?.trim();
+  if (url) {
+    // HTTP invece di WebSocket: ogni richiesta è indipendente, come le funzioni serverless.
+    return createClient({ url: url.replace(/^libsql:\/\//i, "https://"), authToken: process.env.TURSO_AUTH_TOKEN?.trim() });
+  }
   ensureDataDirs();
-  const sqlite = new Database(dataPath("app.db"));
-  sqlite.pragma("journal_mode = WAL");
-  sqlite.pragma("busy_timeout = 5000");
-  sqlite.pragma("foreign_keys = ON");
-
-  const db = drizzle(sqlite, { schema });
-  migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
-  seedDefaults(db);
-
-  h.db = db;
-  h.sqlite = sqlite;
-  return db;
+  // timeout = attesa massima se il worker sta scrivendo nello stesso momento
+  return createClient({ url: pathToFileURL(dataPath("app.db")).href, timeout: 5000 });
 }
 
-export function getSqlite(): Database.Database {
+export function getDb(): Db {
+  const h = holder.__eventStudioDb!;
+  if (!h.db) {
+    h.client = connect();
+    h.db = drizzle(h.client, { schema });
+  }
+  return h.db;
+}
+
+export function getClient(): Client {
   getDb();
-  return holder.__eventStudioDb!.sqlite!;
+  return holder.__eventStudioDb!.client!;
+}
+
+/** Chiude la connessione (script e test). */
+export function closeDb() {
+  const h = holder.__eventStudioDb!;
+  h.client?.close();
+  h.client = undefined;
+  h.db = undefined;
 }
 
 export { schema };

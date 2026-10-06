@@ -1,20 +1,23 @@
 import { and, eq } from "drizzle-orm";
+import { requireUser } from "@/auth/session";
 import { getDb, schema } from "@/db/client";
 import { getSetting } from "@/lib/settings";
 
 // Bozza di richiesta di preventivo come file .eml: si apre in Mail/Outlook già compilata.
 export async function GET(_req: Request, ctx: RouteContext<"/api/rfq/[id]">) {
+  await requireUser();
   const { id } = await ctx.params;
   const db = getDb();
-  const draft = db.select().from(schema.rfqDrafts).where(eq(schema.rfqDrafts.id, id)).get();
+  const draft = await db.select().from(schema.rfqDrafts).where(eq(schema.rfqDrafts.id, id)).get();
   if (!draft) return new Response("Bozza non trovata", { status: 404 });
-  const link = db.select().from(schema.supplierLinks).where(eq(schema.supplierLinks.id, draft.linkId)).get()!;
-  const email = db
+  const link = await db.select().from(schema.supplierLinks).where(eq(schema.supplierLinks.id, draft.linkId)).get();
+  if (!link) return new Response("Collegamento non trovato", { status: 404 });
+  const email = await db
     .select()
     .from(schema.supplierContacts)
     .where(and(eq(schema.supplierContacts.supplierId, link.supplierId), eq(schema.supplierContacts.type, "email")))
     .get();
-  const agency = getSetting("agency");
+  const agency = await getSetting("agency");
   const encode = (s: string) => `=?UTF-8?B?${Buffer.from(s).toString("base64")}?=`;
   const eml = [
     agency.email ? `From: ${encode(agency.name)} <${agency.email}>` : null,

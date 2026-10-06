@@ -8,12 +8,13 @@ import { getSetting } from "@/lib/settings";
 const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const eur = (cents: number) => new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(cents / 100);
 
-export function buildQuoteHtml(quoteId: string) {
-  const data = computeForQuote(quoteId);
+export async function buildQuoteHtml(quoteId: string) {
+  const data = await computeForQuote(quoteId);
   if (!data) throw new Error("Preventivo non trovato");
   const { quote, sections, lines, totals } = data;
-  const project = getDb().select().from(schema.projects).where(eq(schema.projects.id, quote.projectId)).get()!;
-  const agency = getSetting("agency");
+  const project = await getDb().select().from(schema.projects).where(eq(schema.projects.id, quote.projectId)).get();
+  if (!project) throw new Error("Progetto non trovato");
+  const agency = await getSetting("agency");
   const result = new Map(totals.lines.map((l) => [l.id, l]));
   const sorted = [...sections].sort((a, b) => a.position - b.position);
 

@@ -1,8 +1,20 @@
-import { chromium } from "playwright-core";
+import { chromium as playwright } from "playwright-core";
 
-// PDF con Playwright usando il Chrome installato sul Mac (nessun browser da scaricare).
+// PDF con Playwright: sul Mac usa il Chrome installato (nessun browser da scaricare),
+// online una versione di Chromium fatta per le funzioni serverless (@sparticuz/chromium).
+
+async function launch() {
+  if (process.env.VERCEL) {
+    const { default: chromium } = await import("@sparticuz/chromium");
+    // niente GPU nelle funzioni: avvio più rapido
+    chromium.setGraphicsMode = false;
+    return playwright.launch({ executablePath: await chromium.executablePath(), args: chromium.args, headless: true });
+  }
+  return playwright.launch({ channel: "chrome", headless: true });
+}
+
 export async function htmlToPdf(html: string, opts: { landscape?: boolean; footer?: string; fullBleed?: boolean } = {}) {
-  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  const browser = await launch();
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "load" });
