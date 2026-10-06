@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+/* Factory Studios brand v1.0 — paper-first. Valori allineati a src/brand/tokens.ts. */
+@theme {
+  --color-ink: #191521;
+  --color-paper: #f6f4f0;
+  --color-violet: #6c4df6;
+  --color-violet-soft: rgba(108, 77, 246, 0.1);
+  --color-magenta: #ed3e7e;
+  --color-magenta-soft: rgba(237, 62, 126, 0.1);
+  --color-amber: #ffad47;
+  --color-amber-soft: rgba(255, 173, 71, 0.2);
+  --color-card: #ffffff;
+  --color-shell: #e8e6e0;
+  --color-line: #e3e0d9;
+  --color-line-2: #d3cec4;
+  --color-ok: #1f9d64;
+  --color-ok-soft: rgba(31, 157, 100, 0.12);
+  --color-warn: #d9534f;
+  --color-warn-soft: rgba(217, 83, 79, 0.1);
+  --color-n900: #191521;
+  --color-n700: #2e2740;
+  --color-n500: #6b6478;
+  --color-n400: #95909f;
+  --color-n300: #c9c5d0;
+  --color-n200: #e3e0d9;
+  --color-n100: #edeae3;
+
+  --font-display: var(--font-syne), system-ui, sans-serif;
+  --font-sans: var(--font-instrument), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SF Mono", monospace;
+
+  --radius-xs: 4px;
+  --radius-sm: 7px;
+  --radius-md: 9px;
+  --radius-lg: 14px;
+
+  --shadow-sm: 0 1px 2px rgba(25, 21, 33, 0.05);
+  --shadow-md: 0 4px 14px rgba(25, 21, 33, 0.07);
+  --shadow-lg: 0 12px 32px rgba(25, 21, 33, 0.1);
+}
+
+:root {
+  --fs-spectrum: linear-gradient(100deg, #6c4df6, #ed3e7e 58%, #ffad47);
+}
+
+html,
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Etichette in mono maiuscolo, come nel brand */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-n500);
+}
+
+.spectrum-bar {
+  background: var(--fs-spectrum);
+}
+
+/* Numeri allineati nelle tabelle di preventivo */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
