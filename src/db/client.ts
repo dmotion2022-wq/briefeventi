@@ -25,6 +25,10 @@ function connect(): Client {
     // HTTP invece di WebSocket: ogni richiesta è indipendente, come le funzioni serverless.
     return createClient({ url: url.replace(/^libsql:\/\//i, "https://"), authToken: process.env.TURSO_AUTH_TOKEN?.trim() });
   }
+  if (process.env.VERCEL) {
+    // online non c'è un disco su cui scrivere: senza Turso l'app non può partire
+    throw new Error("Database non collegato: aggiungi Turso al progetto su Vercel (Storage) e ripubblica.");
+  }
   ensureDataDirs();
   // timeout = attesa massima se il worker sta scrivendo nello stesso momento
   return createClient({ url: pathToFileURL(dataPath("app.db")).href, timeout: 5000 });

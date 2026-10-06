@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { Instrument_Sans, JetBrains_Mono, Syne } from "next/font/google";
 import { authEnabled, getCurrentUser } from "@/auth/session";
+import { SetupScreen } from "@/components/setup-screen";
 import { Sidebar } from "@/components/shell/sidebar";
+import { cloudSetupIncomplete } from "@/lib/cloud-setup";
 import "./globals.css";
 
 // Factory Studios: Syne solo per i numeri di testata, Instrument Sans per titoli e testi,
@@ -29,10 +31,21 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {
+  const fonts = `${syne.variable} ${instrumentSans.variable} ${jetbrainsMono.variable} antialiased`;
+  // online senza database o archivio: si spiega cosa manca invece di mostrare errori
+  if (cloudSetupIncomplete()) {
+    return (
+      <html lang="it" className={fonts}>
+        <body className="flex min-h-screen px-6">
+          <SetupScreen />
+        </body>
+      </html>
+    );
+  }
   const online = authEnabled();
   const user = online ? await getCurrentUser().catch(() => null) : null;
   return (
-    <html lang="it" className={`${syne.variable} ${instrumentSans.variable} ${jetbrainsMono.variable} antialiased`}>
+    <html lang="it" className={fonts}>
       <body className="flex min-h-screen">
         <Sidebar online={online} user={user ? { name: user.name, admin: user.role === "admin" } : null} />
         <main className="min-w-0 flex-1 px-8 py-7">{children}</main>
